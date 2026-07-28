@@ -21,7 +21,12 @@ type Status =
   | { kind: 'ready' }
   | { kind: 'unsupported'; reason: string };
 
-type NumericKey = 'spin' | 'diskOuterRadius' | 'resolutionScale' | 'exposure';
+type NumericKey =
+  | 'spin'
+  | 'diskOuterRadius'
+  | 'resolutionScale'
+  | 'exposure'
+  | 'bloomStrength';
 
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);

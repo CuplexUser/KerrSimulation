@@ -8,7 +8,7 @@
 
 import type { CameraBasis } from './camera.ts';
 
-export const UNIFORM_FLOATS = 28;
+export const UNIFORM_FLOATS = 36;
 export const UNIFORM_BYTES = UNIFORM_FLOATS * 4;
 
 export type RenderParams = {
@@ -19,6 +19,8 @@ export type RenderParams = {
   diskEnabled: boolean;
   maxSteps: number;
   exposure: number;
+  bloomThreshold: number;
+  bloomStrength: number;
 };
 
 export type UniformInput = {
@@ -31,6 +33,12 @@ export type UniformInput = {
   /** Swap-chain size, used by the present pass to map fragments to UVs. */
   canvasWidth: number;
   canvasHeight: number;
+  /** Row range this dispatch covers. One sample is spread over several bands. */
+  bandOffset: number;
+  bandHeight: number;
+  /** Size of the bloom chain textures. */
+  bloomWidth: number;
+  bloomHeight: number;
 };
 
 /**
@@ -43,10 +51,23 @@ export type UniformInput = {
  *   params   vec4  spin, rOuter, rIsco, rPlus
  *   frame    vec4  frameIndex, traceResX, traceResY, exposure
  *   options  vec4  diskEnabled, maxSteps, canvasW, canvasH
+ *   band     vec4  bandOffset, bandHeight, unused, unused
+ *   bloom    vec4  bloomW, bloomH, threshold, strength
  */
 export function packUniforms(target: Float32Array, input: UniformInput): void {
-  const { basis, params, frameIndex, width, height, canvasWidth, canvasHeight } =
-    input;
+  const {
+    basis,
+    params,
+    frameIndex,
+    width,
+    height,
+    canvasWidth,
+    canvasHeight,
+    bandOffset,
+    bandHeight,
+    bloomWidth,
+    bloomHeight,
+  } = input;
 
   target[0] = basis.eye[0];
   target[1] = basis.eye[1];
@@ -82,4 +103,14 @@ export function packUniforms(target: Float32Array, input: UniformInput): void {
   target[25] = params.maxSteps;
   target[26] = canvasWidth;
   target[27] = canvasHeight;
+
+  target[28] = bandOffset;
+  target[29] = bandHeight;
+  target[30] = 0;
+  target[31] = 0;
+
+  target[32] = bloomWidth;
+  target[33] = bloomHeight;
+  target[34] = params.bloomThreshold;
+  target[35] = params.bloomStrength;
 }

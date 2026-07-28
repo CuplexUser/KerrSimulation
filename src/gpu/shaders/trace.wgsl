@@ -20,8 +20,12 @@ struct Uniforms {
   params: vec4f,
   // frame index (0-based), resolution x, resolution y, exposure
   frame: vec4f,
-  // disk enabled, max integration steps, unused, unused
+  // disk enabled, max integration steps, canvas width, canvas height
   options: vec4f,
+  // row offset and row count for this dispatch, unused, unused
+  band: vec4f,
+  // bloom width, bloom height, threshold, strength
+  bloom: vec4f,
 }
 
 @group(0) @binding(0) var<uniform> U: Uniforms;
@@ -33,15 +37,22 @@ struct Uniforms {
 const R2_A1: f32 = 0.7548776662466927;
 const R2_A2: f32 = 0.5698402909980532;
 
-// Gargantua palette: deep ember at the dim outer edge, through amber gold, to
-// white-hot where the disk is hottest and beamed toward the observer.
-const DISK_EMBER: vec3f = vec3f(0.85, 0.26, 0.05);
-const DISK_GOLD: vec3f = vec3f(1.0, 0.70, 0.26);
-const DISK_HOT: vec3f = vec3f(1.0, 0.975, 0.92);
+// Five-stop ramp across the observed temperature, which spans a far wider gamut
+// than a two-colour blend: crimson at the cool receding rim, through orange and
+// amber gold, into white, and finally blue-white where the approaching limb is
+// both hottest and blueshifted. The blue end is not decoration — a relativistic
+// Doppler factor shifts observed temperature as T_obs = g * T_emit, so the
+// approaching side genuinely runs bluer.
+const DISK_C0: vec3f = vec3f(0.50, 0.02, 0.04);
+const DISK_C1: vec3f = vec3f(1.0, 0.20, 0.03);
+const DISK_C2: vec3f = vec3f(1.0, 0.64, 0.16);
+const DISK_C3: vec3f = vec3f(1.0, 0.93, 0.78);
+const DISK_C4: vec3f = vec3f(0.66, 0.82, 1.0);
 /// Scales the emissivity profile so the beamed inner edge lands near the top of
 /// the tone curve without clipping, leaving the outer disk in its linear range.
-/// Raise it and the whole disk saturates to flat white.
-const DISK_BRIGHTNESS: f32 = 4.5;
+/// Raise it and the hot core blows out to flat white, taking the blue end of the
+/// ramp with it — everything above the clip point is white regardless of tint.
+const DISK_BRIGHTNESS: f32 = 3.0;
 
 fn hash2(p: vec2u) -> vec2f {
   var v = p * vec2u(1664525u, 1013904223u);
@@ -123,20 +134,28 @@ fn starLayer(fuv: vec3f, density: f32, sparsity: f32, seed: f32) -> f32 {
 fn background(d: vec3f) -> vec3f {
   let fuv = cubeFace(d);
 
-  // Deep space stays near-neutral so it does not compete with the disk. A very
-  // faint cool cast keeps it from reading as flat black.
+  // Cool teal-to-indigo cast across the sky. It sits opposite the disk's amber
+  // on the colour wheel, so it widens the overall gamut while staying dim enough
+  // never to compete with the disk itself.
   let axis = clamp(d.z * 0.5 + 0.5, 0.0, 1.0);
   let band = exp(-d.z * d.z * 5.0);
-  var col = mix(vec3f(0.005, 0.006, 0.010), vec3f(0.008, 0.010, 0.017), axis);
-  col += vec3f(0.007, 0.008, 0.013) * band * 0.5;
+  var col = mix(vec3f(0.004, 0.010, 0.014), vec3f(0.009, 0.008, 0.022), axis);
+
+  // A faint dust lane near the equatorial plane, warmed slightly so it reads as
+  // part of the same scene as the disk.
+  col += vec3f(0.020, 0.014, 0.016) * band * 0.55;
 
   // Two star layers at different scales.
   let bright = starLayer(fuv, 46.0, 0.055, 0.0);
   let faint = starLayer(fuv, 115.0, 0.09, 31.0);
 
-  // Slight colour variation so the field is not uniformly white.
+  // Stars span their own range of spectral classes rather than all being white.
   let tintSeed = hash1(floor(fuv * 60.0));
-  let tint = mix(vec3f(0.78, 0.85, 1.0), vec3f(1.0, 0.92, 0.80), tintSeed);
+  let tint = select(
+    mix(vec3f(0.62, 0.76, 1.0), vec3f(0.97, 0.97, 1.0), tintSeed / 0.5),
+    mix(vec3f(0.97, 0.97, 1.0), vec3f(1.0, 0.80, 0.62), (tintSeed - 0.5) / 0.5),
+    tintSeed > 0.5,
+  );
 
   col += tint * (bright * 1.15 + faint * 0.35);
   return col;
@@ -145,6 +164,23 @@ fn background(d: vec3f) -> vec3f {
 // ---------------------------------------------------------------------------
 // Accretion disk (stylized — not radiative transfer)
 // ---------------------------------------------------------------------------
+
+/// Piecewise ramp over the five disk stops. Uneven spacing keeps the amber and
+/// white bands wide, where most of the disk actually sits, so the extremes read
+/// as accents rather than swamping the image.
+fn diskRamp(t: f32) -> vec3f {
+  let x = clamp(t, 0.0, 1.0);
+  if (x < 0.26) {
+    return mix(DISK_C0, DISK_C1, x / 0.26);
+  }
+  if (x < 0.55) {
+    return mix(DISK_C1, DISK_C2, (x - 0.26) / 0.29);
+  }
+  if (x < 0.84) {
+    return mix(DISK_C2, DISK_C3, (x - 0.55) / 0.29);
+  }
+  return mix(DISK_C3, DISK_C4, (x - 0.84) / 0.16);
+}
 
 /// Shade an equatorial-plane crossing.
 ///
@@ -191,14 +227,11 @@ fn diskColor(xc: vec3f, pc: vec3f, rc: f32, a: f32) -> vec3f {
 
   let emissivity = pow(temperature, 3.0) * beaming * DISK_BRIGHTNESS * rings;
 
-  // Colour tracks temperature lifted by the Doppler boost, so the approaching
-  // limb runs white-hot while the receding side falls back toward ember.
-  let heat = clamp(temperature * 2.3 * pow(max(doppler, 0.0), 0.7), 0.0, 1.0);
-  let tint = select(
-    mix(DISK_EMBER, DISK_GOLD, heat / 0.55),
-    mix(DISK_GOLD, DISK_HOT, (heat - 0.55) / 0.45),
-    heat > 0.55,
-  );
+  // Observed temperature, not emitted: the Doppler factor shifts it directly,
+  // T_obs = g * T_emit. That single term is what carries the disk from crimson
+  // on the receding rim to blue-white on the approaching limb.
+  let observed = clamp(temperature * doppler * 1.45, 0.0, 1.0);
+  let tint = diskRamp(observed);
 
   // Soft edges so the annulus does not terminate in a hard ring.
   let outerFade = 1.0 - smoothstep(rOuter * 0.8, rOuter, rc);
@@ -271,15 +304,21 @@ fn traceRadiance(origin: vec3f, direction: vec3f) -> vec3f {
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) gid: vec3u) {
   let resolution = vec2u(u32(U.frame.y), u32(U.frame.z));
-  if (gid.x >= resolution.x || gid.y >= resolution.y) {
+
+  // One sample is spread over several dispatches, a horizontal band at a time.
+  // Integrating a full image in one submission takes long enough on modest GPUs
+  // to stall compositing and input handling for the whole tab; short dispatches
+  // keep the browser responsive at the same total throughput.
+  let pixel = vec2u(gid.x, gid.y + u32(U.band.x));
+  if (pixel.x >= resolution.x || pixel.y >= resolution.y) {
     return;
   }
 
   let frameIndex = u32(U.frame.x);
-  let jitter = sampleOffset(gid.xy, frameIndex);
+  let jitter = sampleOffset(pixel, frameIndex);
 
   // Pixel centre plus sub-pixel jitter, mapped to NDC with y up.
-  let uv = (vec2f(gid.xy) + jitter) / vec2f(resolution);
+  let uv = (vec2f(pixel) + jitter) / vec2f(resolution);
   let ndc = vec2f(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
 
   let tanHalfFov = U.camRight.w;
@@ -294,7 +333,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
   // Progressive blend. At frameIndex 0 the weight is 1, so the first pass after
   // a reset fully overwrites and no explicit clear is needed.
-  let coord = vec2i(gid.xy);
+  let coord = vec2i(pixel);
   let previous = textureLoad(prevAccum, coord, 0);
   let weight = 1.0 / (f32(frameIndex) + 1.0);
   textureStore(nextAccum, coord, mix(previous, vec4f(radiance, 1.0), weight));

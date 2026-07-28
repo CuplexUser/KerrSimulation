@@ -136,7 +136,7 @@ code {
 }
 
 .panel__section {
-  padding: 0.9rem 1rem;
+  padding: 0.75rem 1rem;
   border-bottom: 1px solid var(--edge-soft);
 }
 
@@ -203,7 +203,7 @@ code {
 
 .radial-scale__track {
   position: relative;
-  height: 2.75rem;
+  height: 2.25rem;
   border-bottom: 1px solid var(--edge);
 }
 
@@ -324,9 +324,9 @@ code {
 }
 
 .field__hint {
-  margin: 0.3rem 0 0;
-  font-size: 0.6875rem;
-  line-height: 1.5;
+  margin: 0.15rem 0 0;
+  font-size: 0.6563rem;
+  line-height: 1.35;
   color: var(--text-faint);
 }
 
@@ -335,10 +335,12 @@ code {
   appearance: none;
   display: block;
   width: 100%;
-  height: 1rem;
-  margin: 0.4rem 0 0;
+  /* Generous hit area — the visible track is 2px, which is far too thin to grab. */
+  height: 1.25rem;
+  margin: 0.1rem 0 0;
   background: none;
   cursor: pointer;
+  touch-action: pan-y;
 }
 
 .field__range::-webkit-slider-runnable-track {
@@ -354,20 +356,24 @@ code {
 .field__range::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
-  width: 12px;
-  height: 12px;
-  margin-top: -5px;
+  width: 14px;
+  height: 14px;
+  margin-top: -6px;
   border: 0;
   border-radius: 50%;
   background: var(--accent);
 }
 
 .field__range::-moz-range-thumb {
-  width: 12px;
-  height: 12px;
+  width: 14px;
+  height: 14px;
   border: 0;
   border-radius: 50%;
   background: var(--accent);
+}
+
+.field__range:active::-webkit-slider-thumb {
+  transform: scale(1.25);
 }
 
 .field__range:focus-visible,

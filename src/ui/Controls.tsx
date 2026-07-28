@@ -6,7 +6,12 @@ import {
 } from '../gpu/KerrRenderer.ts';
 import { RadialScale } from './RadialScale.tsx';
 
-type NumericKey = 'spin' | 'diskOuterRadius' | 'resolutionScale' | 'exposure';
+type NumericKey =
+  | 'spin'
+  | 'diskOuterRadius'
+  | 'resolutionScale'
+  | 'exposure'
+  | 'bloomStrength';
 
 type Props = {
   scene: SceneParams;
@@ -97,8 +102,7 @@ export function Controls({
       <header className="panel__head">
         <h1 className="panel__title">Kerr</h1>
         <p className="panel__subtitle">
-          Null geodesics integrated through the Kerr metric, one jittered sample
-          per pixel per frame.
+          Null geodesics through the Kerr metric, refined one sample at a time.
         </p>
       </header>
 
@@ -125,7 +129,7 @@ export function Controls({
           </div>
           <p className="convergence__state">
             {stats?.interacting
-              ? 'Tracing at half resolution while you move.'
+              ? 'Tracing at reduced resolution while you move.'
               : stats?.converged
                 ? 'Converged. Move the camera to start over.'
                 : 'Refining while the camera holds still.'}
@@ -187,6 +191,17 @@ export function Controls({
           format={formatMultiplier}
           onChange={onNumericChange}
         />
+        <Slider
+          name="bloomStrength"
+          label="Glow"
+          hint="Light bleeding off the hottest part of the disk."
+          min={0}
+          max={2}
+          step={0.05}
+          value={scene.bloomStrength}
+          format={formatMultiplier}
+          onChange={onNumericChange}
+        />
 
         <label className="toggle" htmlFor="toggle-disk">
           <input
@@ -219,9 +234,11 @@ export function Controls({
           </div>
           <div>
             <dt>Render</dt>
-            <dd>
-              {stats ? `${stats.width}×${stats.height}` : '—'}
-            </dd>
+            <dd>{stats ? `${stats.width}×${stats.height}` : '—'}</dd>
+          </div>
+          <div>
+            <dt>Split</dt>
+            <dd>{stats ? `${stats.bandCount}×` : '—'}</dd>
           </div>
         </dl>
       </footer>

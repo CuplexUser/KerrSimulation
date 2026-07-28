@@ -6,6 +6,7 @@
  * code. Vite's `?raw` import handles the loading — no plugin required.
  */
 
+import bloomSource from './bloom.wgsl?raw';
 import kerrMath from './kerr_math.wgsl?raw';
 import presentSource from './present.wgsl?raw';
 import traceSource from './trace.wgsl?raw';
@@ -14,3 +15,4 @@ import validateSource from './validate.wgsl?raw';
 export const traceShader = `${kerrMath}\n${traceSource}`;
 export const validateShader = `${kerrMath}\n${validateSource}`;
 export const presentShader = presentSource;
+export const bloomShader = bloomSource;
