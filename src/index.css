@@ -1,10 +1,13 @@
 /*
  * Instrument panel over a full-bleed render.
  *
- * Palette is fixed by the brief: #18181c ground, #232328 panel, #4a90e2 accent,
- * dark only. The typographic split is the one real rule here — prose in a sans
- * stack, every live number in tabular mono so readouts do not jitter as they
- * update at 4 Hz.
+ * Ground (#18181c) and panel (#232328) are fixed by the brief. The accent moved
+ * from the original #4a90e2 to its warm counterpart when the render was recoloured
+ * to Gargantua's palette — a cold blue chrome beside a gold disk reads as a
+ * mistake. Same lightness and saturation, opposite hue.
+ *
+ * The typographic split is the one real rule here — prose in a sans stack, every
+ * live number in tabular mono so readouts do not jitter as they update at 4 Hz.
  */
 
 :root {
@@ -12,8 +15,8 @@
   --panel: #232328;
   --edge: #33333c;
   --edge-soft: #2b2b33;
-  --accent: #4a90e2;
-  --accent-dim: #35648f;
+  --accent: #e2a04a;
+  --accent-dim: #8f6535;
   --text: #e6e8ef;
   --text-dim: #9498a6;
   --text-faint: #63677a;
@@ -112,7 +115,7 @@ code {
 }
 
 .panel__head {
-  padding: 1.15rem 1.15rem 0.9rem;
+  padding: 0.9rem 1rem 0.8rem;
   border-bottom: 1px solid var(--edge-soft);
 }
 
@@ -133,12 +136,12 @@ code {
 }
 
 .panel__section {
-  padding: 1.15rem;
+  padding: 0.9rem 1rem;
   border-bottom: 1px solid var(--edge-soft);
 }
 
 .panel__foot {
-  padding: 0.85rem 1.15rem;
+  padding: 0.75rem 1rem;
   margin-top: auto;
 }
 
@@ -299,7 +302,7 @@ code {
 /* -------------------------------------------------------------- fields --- */
 
 .field + .field {
-  margin-top: 1.05rem;
+  margin-top: 0.8rem;
 }
 
 .field__head {
@@ -380,7 +383,7 @@ code {
   display: flex;
   align-items: flex-start;
   gap: 0.6rem;
-  margin-top: 1.15rem;
+  margin-top: 0.9rem;
   cursor: pointer;
 }
 

@@ -28,15 +28,25 @@ export type SceneParams = {
 
 export const DEFAULT_SCENE: SceneParams = {
   spin: 0.85,
-  diskOuterRadius: 18,
+  diskOuterRadius: 14,
   diskEnabled: true,
   resolutionScale: 1,
   maxSteps: 450,
-  exposure: 1.1,
+  exposure: 1.2,
 };
 
 /** Past this the image has converged; stop dispatching and just re-present. */
 export const MAX_ACCUMULATED_SAMPLES = 1024;
+
+/**
+ * While the camera is moving, trace at this fraction of the full resolution.
+ * The first frame after any camera change is a single noisy sample regardless,
+ * so spending full resolution on it buys nothing and costs interactivity.
+ */
+const INTERACTIVE_SCALE = 0.5;
+
+/** How long after the last camera change to stay in the coarse mode. */
+const INTERACTION_IDLE_MS = 180;
 
 export type RendererStats = {
   samples: number;
@@ -45,6 +55,7 @@ export type RendererStats = {
   iscoRadius: number;
   horizonRadius: number;
   converged: boolean;
+  interacting: boolean;
 };
 
 const ACCUMULATION_FORMAT: GPUTextureFormat = 'rgba16float';
@@ -65,14 +76,21 @@ export class KerrRenderer {
   #accumTextures: GPUTexture[] = [];
   #computeBindGroups: GPUBindGroup[] = [];
   #presentBindGroups: GPUBindGroup[] = [];
+  #sampler: GPUSampler;
   #pingPong = 0;
 
   #camera: CameraState = { ...DEFAULT_CAMERA };
   #scene: SceneParams = { ...DEFAULT_SCENE };
 
   #frameIndex = 0;
+  /** Resolution the compute pass traces at. */
   #width = 1;
   #height = 1;
+  /** Swap-chain resolution, which the trace resolution is a fraction of. */
+  #canvasWidth = 1;
+  #canvasHeight = 1;
+  #interacting = false;
+  #lastInteractionAt = 0;
   #rafHandle = 0;
   #disposed = false;
   #resizeObserver: ResizeObserver | null = null;
@@ -99,6 +117,14 @@ export class KerrRenderer {
       label: 'kerr-uniforms',
       size: UNIFORM_BYTES,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+
+    // Linear so the coarse interactive pass upscales smoothly instead of
+    // showing blocky texels while you drag.
+    this.#sampler = device.createSampler({
+      label: 'kerr-accumulation-sampler',
+      magFilter: 'linear',
+      minFilter: 'linear',
     });
   }
 
@@ -182,6 +208,15 @@ export class KerrRenderer {
   updateCamera(mutate: (camera: CameraState) => void): void {
     mutate(this.#camera);
     this.resetAccumulation();
+
+    // Drop to the coarse trace resolution for the duration of the gesture. The
+    // frame loop restores full resolution once the camera has been still for
+    // INTERACTION_IDLE_MS.
+    this.#lastInteractionAt = performance.now();
+    if (!this.#interacting) {
+      this.#interacting = true;
+      this.#resize();
+    }
   }
 
   setScene(scene: Partial<SceneParams>): void {
@@ -250,29 +285,36 @@ export class KerrRenderer {
     const rect = this.#canvas.getBoundingClientRect();
     const limit = this.device.limits.maxTextureDimension2D;
 
-    const width = Math.max(
-      1,
-      Math.min(
-        Math.floor(rect.width * dpr * this.#scene.resolutionScale),
-        limit,
-      ),
-    );
-    const height = Math.max(
-      1,
-      Math.min(
-        Math.floor(rect.height * dpr * this.#scene.resolutionScale),
-        limit,
-      ),
-    );
+    const clamp = (value: number) =>
+      Math.max(1, Math.min(Math.floor(value), limit));
 
-    if (width === this.#width && height === this.#height && this.#accumTextures.length > 0) {
+    // The canvas always stays at full device resolution; only the traced image
+    // shrinks. That keeps the swap chain stable while the trace resolution
+    // changes underneath it.
+    const canvasWidth = clamp(rect.width * dpr);
+    const canvasHeight = clamp(rect.height * dpr);
+
+    const scale =
+      this.#scene.resolutionScale * (this.#interacting ? INTERACTIVE_SCALE : 1);
+    const width = clamp(canvasWidth * scale);
+    const height = clamp(canvasHeight * scale);
+
+    if (
+      width === this.#width &&
+      height === this.#height &&
+      canvasWidth === this.#canvasWidth &&
+      canvasHeight === this.#canvasHeight &&
+      this.#accumTextures.length > 0
+    ) {
       return;
     }
 
     this.#width = width;
     this.#height = height;
-    this.#canvas.width = width;
-    this.#canvas.height = height;
+    this.#canvasWidth = canvasWidth;
+    this.#canvasHeight = canvasHeight;
+    this.#canvas.width = canvasWidth;
+    this.#canvas.height = canvasHeight;
 
     for (const texture of this.#accumTextures) texture.destroy();
 
@@ -307,6 +349,7 @@ export class KerrRenderer {
         entries: [
           { binding: 0, resource: this.#accumTextures[i].createView() },
           { binding: 1, resource: { buffer: this.#uniformBuffer } },
+          { binding: 2, resource: this.#sampler },
         ],
       }),
     );
@@ -333,6 +376,15 @@ export class KerrRenderer {
   #renderFrame(): void {
     if (this.#accumTextures.length < 2) return;
 
+    // Camera has been still long enough — go back to full resolution.
+    if (
+      this.#interacting &&
+      performance.now() - this.#lastInteractionAt > INTERACTION_IDLE_MS
+    ) {
+      this.#interacting = false;
+      this.#resize();
+    }
+
     const converged = this.#frameIndex >= MAX_ACCUMULATED_SAMPLES;
 
     packUniforms(this.#uniformScratch, {
@@ -341,6 +393,8 @@ export class KerrRenderer {
       frameIndex: this.#frameIndex,
       width: this.#width,
       height: this.#height,
+      canvasWidth: this.#canvasWidth,
+      canvasHeight: this.#canvasHeight,
     });
     this.device.queue.writeBuffer(this.#uniformBuffer, 0, this.#uniformScratch);
 
@@ -401,6 +455,7 @@ export class KerrRenderer {
       iscoRadius: iscoRadius(this.#scene.spin),
       horizonRadius: horizonRadius(this.#scene.spin),
       converged,
+      interacting: this.#interacting,
     });
   }
 }

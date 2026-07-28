@@ -1,9 +1,12 @@
 // Presents the accumulation texture to the swap chain.
 //
 // Compute shaders cannot write the canvas texture directly, so a minimal render
-// pass does the final tone map and transfer-function encode. The accumulation
-// texture is exactly canvas-sized, so this is a 1:1 textureLoad — no sampler and
-// no filtering ambiguity.
+// pass does the final tone map and transfer-function encode.
+//
+// The accumulation texture is not always canvas-sized: while the camera is being
+// dragged the renderer traces at a coarser resolution to keep the interaction
+// immediate. So this samples with linear filtering rather than loading 1:1.
+// rgba16float is filterable in core WebGPU, so no optional feature is needed.
 
 struct Uniforms {
   camPos: vec4f,
@@ -11,13 +14,15 @@ struct Uniforms {
   camUp: vec4f,
   camFwd: vec4f,
   params: vec4f,
-  // frame index, resolution x, resolution y, exposure
+  // frame index, trace resolution x, trace resolution y, exposure
   frame: vec4f,
+  // disk enabled, max steps, canvas width, canvas height
   options: vec4f,
 }
 
 @group(0) @binding(0) var accum: texture_2d<f32>;
 @group(0) @binding(1) var<uniform> U: Uniforms;
+@group(0) @binding(2) var accumSampler: sampler;
 
 struct VertexOut {
   @builtin(position) position: vec4f,
@@ -48,7 +53,8 @@ fn acesFilmic(x: vec3f) -> vec3f {
 
 @fragment
 fn fs(in: VertexOut) -> @location(0) vec4f {
-  let radiance = textureLoad(accum, vec2i(in.position.xy), 0).rgb;
+  let uv = in.position.xy / vec2f(U.options.z, U.options.w);
+  let radiance = textureSampleLevel(accum, accumSampler, uv, 0.0).rgb;
   let mapped = acesFilmic(radiance * U.frame.w);
 
   // The preferred canvas format is typically bgra8unorm (not -srgb), so the

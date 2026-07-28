@@ -124,9 +124,11 @@ export function Controls({
             <span style={{ width: `${progress}%` }} />
           </div>
           <p className="convergence__state">
-            {stats?.converged
-              ? 'Converged. Move the camera to start over.'
-              : 'Refining while the camera holds still.'}
+            {stats?.interacting
+              ? 'Tracing at half resolution while you move.'
+              : stats?.converged
+                ? 'Converged. Move the camera to start over.'
+                : 'Refining while the camera holds still.'}
           </p>
         </div>
       </section>

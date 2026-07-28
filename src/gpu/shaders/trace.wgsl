@@ -33,10 +33,15 @@ struct Uniforms {
 const R2_A1: f32 = 0.7548776662466927;
 const R2_A2: f32 = 0.5698402909980532;
 
-const DISK_COOL: vec3f = vec3f(0.20, 0.40, 1.0);
-const DISK_HOT: vec3f = vec3f(1.0, 0.97, 0.93);
-/// Normalises the peak of the emissivity profile to roughly 1 before beaming.
-const DISK_BRIGHTNESS: f32 = 13.0;
+// Gargantua palette: deep ember at the dim outer edge, through amber gold, to
+// white-hot where the disk is hottest and beamed toward the observer.
+const DISK_EMBER: vec3f = vec3f(0.85, 0.26, 0.05);
+const DISK_GOLD: vec3f = vec3f(1.0, 0.70, 0.26);
+const DISK_HOT: vec3f = vec3f(1.0, 0.975, 0.92);
+/// Scales the emissivity profile so the beamed inner edge lands near the top of
+/// the tone curve without clipping, leaving the outer disk in its linear range.
+/// Raise it and the whole disk saturates to flat white.
+const DISK_BRIGHTNESS: f32 = 4.5;
 
 fn hash2(p: vec2u) -> vec2f {
   var v = p * vec2u(1664525u, 1013904223u);
@@ -118,11 +123,12 @@ fn starLayer(fuv: vec3f, density: f32, sparsity: f32, seed: f32) -> f32 {
 fn background(d: vec3f) -> vec3f {
   let fuv = cubeFace(d);
 
-  // Faint cool gradient along the spin axis, plus a soft band near the equator.
+  // Deep space stays near-neutral so it does not compete with the disk. A very
+  // faint cool cast keeps it from reading as flat black.
   let axis = clamp(d.z * 0.5 + 0.5, 0.0, 1.0);
   let band = exp(-d.z * d.z * 5.0);
-  var col = mix(vec3f(0.010, 0.012, 0.020), vec3f(0.016, 0.022, 0.038), axis);
-  col += vec3f(0.014, 0.018, 0.030) * band * 0.5;
+  var col = mix(vec3f(0.005, 0.006, 0.010), vec3f(0.008, 0.010, 0.017), axis);
+  col += vec3f(0.007, 0.008, 0.013) * band * 0.5;
 
   // Two star layers at different scales.
   let bright = starLayer(fuv, 46.0, 0.055, 0.0);
@@ -130,7 +136,7 @@ fn background(d: vec3f) -> vec3f {
 
   // Slight colour variation so the field is not uniformly white.
   let tintSeed = hash1(floor(fuv * 60.0));
-  let tint = mix(vec3f(0.72, 0.82, 1.0), vec3f(1.0, 0.94, 0.84), tintSeed);
+  let tint = mix(vec3f(0.78, 0.85, 1.0), vec3f(1.0, 0.92, 0.80), tintSeed);
 
   col += tint * (bright * 1.15 + faint * 0.35);
   return col;
@@ -142,14 +148,25 @@ fn background(d: vec3f) -> vec3f {
 
 /// Shade an equatorial-plane crossing.
 ///
-/// Temperature falls as r^-0.75 and a crude Doppler/beaming factor is derived
-/// from the local prograde Keplerian angular velocity omega = 1/(r^1.5 + a).
-/// Colour is biased from cool blue toward hot white with intensity.
+/// Temperature follows the r^-0.75 falloff, completed with the standard
+/// Shakura-Sunyaev inner-boundary factor (1 - sqrt(r_isco/r))^0.25 so emission
+/// goes to zero *at* the ISCO and peaks just outside it, which is what gives the
+/// disk a bright ring rather than a flat wash.
+///
+/// Brightness is not temperature: a thermal emitter radiates roughly as T^3-T^4,
+/// so intensity falls far faster than the temperature does. That gap is what
+/// separates a hot inner ring from a dim outer disk.
+///
+/// The Doppler/beaming factor comes from the local prograde Keplerian angular
+/// velocity omega = 1/(r^1.5 + a) — crude, but it is what makes one side of the
+/// disk visibly brighter than the other.
 fn diskColor(xc: vec3f, pc: vec3f, rc: f32, a: f32) -> vec3f {
   let rIsco = U.params.z;
   let rOuter = U.params.y;
 
-  let temperature = pow(max(rc / rIsco, 1e-3), -0.75);
+  let x = max(rc / rIsco, 1.0);
+  let innerBoundary = pow(max(1.0 - inverseSqrt(x), 0.0), 0.25);
+  let temperature = pow(x, -0.75) * innerBoundary;
 
   // Local orbital velocity: prograde Keplerian, tangential in the equatorial plane.
   let omega = 1.0 / (pow(rc, 1.5) + a);
@@ -165,19 +182,28 @@ fn diskColor(xc: vec3f, pc: vec3f, rc: f32, a: f32) -> vec3f {
 
   let lorentz = inverseSqrt(max(1.0 - speed * speed, 1e-4));
   let doppler = 1.0 / (lorentz * (1.0 - dot(beta, toObserver)));
-  let beaming = clamp(pow(max(doppler, 1e-3), 3.0), 0.04, 14.0);
+  let beaming = clamp(pow(max(doppler, 1e-3), 3.0), 0.03, 16.0);
 
-  let emissivity = temperature * beaming;
+  // Orbital shear smears any structure azimuthally, so concentric striation is
+  // the physically-motivated texture for a disk. Logarithmic spacing keeps the
+  // bands roughly even across the annulus.
+  let rings = 1.0 - 0.20 * pow(0.5 + 0.5 * sin(log(max(rc, 1e-3)) * 22.0), 2.0);
 
-  // Saturating ramp: cool blue at low intensity, hot white where beaming piles up.
-  let t = clamp(emissivity / (emissivity + 1.1), 0.0, 1.0);
-  let tint = mix(DISK_COOL, DISK_HOT, t * t);
+  let emissivity = pow(temperature, 3.0) * beaming * DISK_BRIGHTNESS * rings;
+
+  // Colour tracks temperature lifted by the Doppler boost, so the approaching
+  // limb runs white-hot while the receding side falls back toward ember.
+  let heat = clamp(temperature * 2.3 * pow(max(doppler, 0.0), 0.7), 0.0, 1.0);
+  let tint = select(
+    mix(DISK_EMBER, DISK_GOLD, heat / 0.55),
+    mix(DISK_GOLD, DISK_HOT, (heat - 0.55) / 0.45),
+    heat > 0.55,
+  );
 
   // Soft edges so the annulus does not terminate in a hard ring.
-  let innerFade = smoothstep(rIsco, rIsco * 1.08, rc);
-  let outerFade = 1.0 - smoothstep(rOuter * 0.85, rOuter, rc);
+  let outerFade = 1.0 - smoothstep(rOuter * 0.8, rOuter, rc);
 
-  return tint * emissivity * DISK_BRIGHTNESS * innerFade * outerFade;
+  return tint * emissivity * outerFade;
 }
 
 // ---------------------------------------------------------------------------

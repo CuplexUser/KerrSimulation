@@ -25,8 +25,12 @@ export type UniformInput = {
   basis: CameraBasis;
   params: RenderParams;
   frameIndex: number;
+  /** Resolution the compute pass traces at — may be coarser than the canvas. */
   width: number;
   height: number;
+  /** Swap-chain size, used by the present pass to map fragments to UVs. */
+  canvasWidth: number;
+  canvasHeight: number;
 };
 
 /**
@@ -37,11 +41,12 @@ export type UniformInput = {
  *   camUp    vec4  xyz            w aspect
  *   camFwd   vec4  xyz            w unused
  *   params   vec4  spin, rOuter, rIsco, rPlus
- *   frame    vec4  frameIndex, resX, resY, exposure
- *   options  vec4  diskEnabled, maxSteps, unused, unused
+ *   frame    vec4  frameIndex, traceResX, traceResY, exposure
+ *   options  vec4  diskEnabled, maxSteps, canvasW, canvasH
  */
 export function packUniforms(target: Float32Array, input: UniformInput): void {
-  const { basis, params, frameIndex, width, height } = input;
+  const { basis, params, frameIndex, width, height, canvasWidth, canvasHeight } =
+    input;
 
   target[0] = basis.eye[0];
   target[1] = basis.eye[1];
@@ -75,6 +80,6 @@ export function packUniforms(target: Float32Array, input: UniformInput): void {
 
   target[24] = params.diskEnabled ? 1 : 0;
   target[25] = params.maxSteps;
-  target[26] = 0;
-  target[27] = 0;
+  target[26] = canvasWidth;
+  target[27] = canvasHeight;
 }

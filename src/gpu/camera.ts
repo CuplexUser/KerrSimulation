@@ -36,10 +36,15 @@ export const MAX_ELEVATION = Math.PI / 2 - 0.02;
 export const MIN_RADIUS = 6;
 export const MAX_RADIUS = 55;
 
+/**
+ * Near-equatorial and far enough out that a 14 M disk sits comfortably inside a
+ * 45-degree field rather than filling it. The shallow elevation is what makes
+ * the lensed far side of the disk arc over the shadow.
+ */
 export const DEFAULT_CAMERA: CameraState = {
   azimuth: 0.6,
-  elevation: 0.22,
-  radius: 22,
+  elevation: 0.16,
+  radius: 32,
   fovDegrees: 45,
 };
 
