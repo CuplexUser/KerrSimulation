@@ -1,0 +1,67 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": [
+    "eslint",
+    "typescript",
+    "react",
+    "react-perf",
+    "oxc",
+    "import",
+    "promise",
+    "unicorn"
+  ],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "warn",
+    "perf": "warn",
+    "pedantic": "off",
+    "style": "off",
+    "restriction": "off"
+  },
+  "env": {
+    "browser": true,
+    "es2024": true
+  },
+  "ignorePatterns": ["dist", "node_modules"],
+  "options": {
+    "typeAware": true
+  },
+  "rules": {
+    "react/rules-of-hooks": "error",
+    "react/only-export-components": ["warn", { "allowConstantExport": true }],
+    // Modern JSX transform ("jsx": "react-jsx") — React need not be in scope.
+    "react/react-in-jsx-scope": "off",
+    "eslint/no-unused-vars": [
+      "error",
+      { "argsIgnorePattern": "^_", "varsIgnorePattern": "^_" }
+    ],
+    "typescript/no-explicit-any": "error",
+    "typescript/consistent-type-imports": "error",
+    "promise/prefer-await-to-then": "error",
+    "unicorn/prefer-node-protocol": "error",
+
+    // The renderer is a hot path over typed arrays and WebGPU descriptors.
+    // These defaults fight numeric/graphics code without catching real bugs.
+    "unicorn/no-new-array": "off",
+    "unicorn/prefer-math-min-max": "off",
+    "unicorn/number-literal-case": "off",
+    "unicorn/prefer-query-selector": "off",
+    // `import './index.css'` is the Vite idiom for style side effects.
+    "import/no-unassigned-import": "off",
+
+    // The radial scale and the convergence bar position elements from live
+    // numbers, so inline style objects are the point. No child here is memoized,
+    // so hoisting them would buy nothing and cost readability. The sibling rule
+    // jsx-no-new-function-as-prop stays on — those are worth hoisting.
+    "react-perf/jsx-no-new-object-as-prop": "off"
+  },
+  "overrides": [
+    {
+      "files": ["scripts/**/*.mts"],
+      "env": { "browser": false, "node": true },
+      "rules": {
+        "eslint/no-console": "off"
+      }
+    }
+  ]
+}

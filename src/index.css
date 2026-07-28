@@ -1,0 +1,639 @@
+/*
+ * Instrument panel over a full-bleed render.
+ *
+ * Palette is fixed by the brief: #18181c ground, #232328 panel, #4a90e2 accent,
+ * dark only. The typographic split is the one real rule here — prose in a sans
+ * stack, every live number in tabular mono so readouts do not jitter as they
+ * update at 4 Hz.
+ */
+
+:root {
+  --bg: #18181c;
+  --panel: #232328;
+  --edge: #33333c;
+  --edge-soft: #2b2b33;
+  --accent: #4a90e2;
+  --accent-dim: #35648f;
+  --text: #e6e8ef;
+  --text-dim: #9498a6;
+  --text-faint: #63677a;
+  --pass: #4ad6a8;
+  --fail: #e2706a;
+
+  --sans:
+    system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --mono: ui-monospace, 'Cascadia Mono', 'SF Mono', Menlo, Consolas, monospace;
+
+  --panel-width: 21rem;
+  --radius: 4px;
+
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Every live numeric readout shares these figures. */
+.field__value,
+.convergence__count,
+.radial-scale__ticks,
+.radial-scale__caption,
+.legend dd,
+.physics__ray-detail,
+.physics__facts dd,
+.physics__note,
+code {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* --------------------------------------------------------------- stage --- */
+
+.stage {
+  position: relative;
+  height: 100%;
+  overflow: hidden;
+}
+
+.stage__canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: grab;
+  touch-action: none;
+}
+
+.stage__canvas.is-dragging {
+  cursor: grabbing;
+}
+
+.stage__booting {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  margin: 0;
+  color: var(--text-faint);
+  letter-spacing: 0.04em;
+}
+
+/* --------------------------------------------------------------- panel --- */
+
+.panel {
+  position: absolute;
+  inset: 1rem auto 1rem 1rem;
+  width: var(--panel-width);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius);
+}
+
+.panel__head {
+  padding: 1.15rem 1.15rem 0.9rem;
+  border-bottom: 1px solid var(--edge-soft);
+}
+
+.panel__title {
+  margin: 0;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.panel__subtitle {
+  margin: 0.5rem 0 0;
+  color: var(--text-dim);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+}
+
+.panel__section {
+  padding: 1.15rem;
+  border-bottom: 1px solid var(--edge-soft);
+}
+
+.panel__foot {
+  padding: 0.85rem 1.15rem;
+  margin-top: auto;
+}
+
+/* --------------------------------------------------------- convergence --- */
+
+.convergence__row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.convergence__label {
+  font-size: 0.6875rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.convergence__count {
+  font-size: 1.375rem;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+
+.convergence__total {
+  color: var(--text-faint);
+  font-size: 0.8125rem;
+  font-weight: 400;
+  margin-left: 0.25rem;
+}
+
+.convergence__bar {
+  position: relative;
+  height: 2px;
+  margin: 0.7rem 0 0.55rem;
+  background: var(--edge);
+  overflow: hidden;
+}
+
+.convergence__bar > span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width 240ms linear;
+}
+
+.convergence__state {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--text-faint);
+}
+
+/* -------------------------------------------------------- radial scale --- */
+
+.radial-scale {
+  margin: 0;
+}
+
+.radial-scale__track {
+  position: relative;
+  height: 2.75rem;
+  border-bottom: 1px solid var(--edge);
+}
+
+.radial-scale__horizon-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: repeating-linear-gradient(
+    -45deg,
+    #101014,
+    #101014 3px,
+    #16161b 3px,
+    #16161b 6px
+  );
+}
+
+.radial-scale__disk-band {
+  position: absolute;
+  top: 55%;
+  bottom: 0;
+  background: linear-gradient(
+    to right,
+    color-mix(in srgb, var(--accent) 55%, transparent),
+    color-mix(in srgb, var(--accent) 12%, transparent)
+  );
+}
+
+.radial-scale__marker {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--text-faint);
+}
+
+.radial-scale__marker-label {
+  position: absolute;
+  top: 0;
+  left: 3px;
+  font-size: 0.625rem;
+  letter-spacing: 0.06em;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
+.radial-scale__marker.is-horizon {
+  background: var(--text);
+}
+
+.radial-scale__marker.is-horizon .radial-scale__marker-label {
+  color: var(--text);
+}
+
+.radial-scale__marker.is-isco {
+  background: var(--accent);
+}
+
+.radial-scale__marker.is-isco .radial-scale__marker-label {
+  color: var(--accent);
+}
+
+.radial-scale__marker.is-camera {
+  background: none;
+  border-left: 1px dashed var(--text-faint);
+}
+
+.radial-scale__marker.is-outer .radial-scale__marker-label,
+.radial-scale__marker.is-camera .radial-scale__marker-label {
+  top: auto;
+  bottom: 0;
+}
+
+.radial-scale__ticks {
+  position: relative;
+  height: 1rem;
+  font-size: 0.625rem;
+  color: var(--text-faint);
+}
+
+.radial-scale__ticks > span {
+  position: absolute;
+  transform: translateX(-50%);
+  padding-top: 2px;
+}
+
+.radial-scale__caption {
+  margin: 0.5rem 0 0;
+  font-size: 0.6875rem;
+  line-height: 1.55;
+  color: var(--text-faint);
+}
+
+.radial-scale__caption em {
+  font-style: italic;
+}
+
+/* -------------------------------------------------------------- fields --- */
+
+.field + .field {
+  margin-top: 1.05rem;
+}
+
+.field__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+  cursor: pointer;
+}
+
+.field__label {
+  font-size: 0.8125rem;
+  color: var(--text);
+}
+
+.field__value {
+  font-size: 0.8125rem;
+  color: var(--accent);
+}
+
+.field__hint {
+  margin: 0.3rem 0 0;
+  font-size: 0.6875rem;
+  line-height: 1.5;
+  color: var(--text-faint);
+}
+
+.field__range {
+  -webkit-appearance: none;
+  appearance: none;
+  display: block;
+  width: 100%;
+  height: 1rem;
+  margin: 0.4rem 0 0;
+  background: none;
+  cursor: pointer;
+}
+
+.field__range::-webkit-slider-runnable-track {
+  height: 2px;
+  background: var(--edge);
+}
+
+.field__range::-moz-range-track {
+  height: 2px;
+  background: var(--edge);
+}
+
+.field__range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  margin-top: -5px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.field__range::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.field__range:focus-visible,
+.toggle input:focus-visible + .toggle__box,
+.physics__run:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* -------------------------------------------------------------- toggle --- */
+
+.toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  margin-top: 1.15rem;
+  cursor: pointer;
+}
+
+.toggle input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.toggle__box {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin-top: 2px;
+  border: 1px solid var(--edge);
+  border-radius: 2px;
+  background: var(--bg);
+}
+
+.toggle input:checked + .toggle__box {
+  border-color: var(--accent);
+  background: var(--accent);
+  box-shadow: inset 0 0 0 3px var(--panel);
+}
+
+.toggle__text {
+  display: block;
+}
+
+.toggle__label {
+  display: block;
+  font-size: 0.8125rem;
+}
+
+.toggle__hint {
+  display: block;
+  margin-top: 0.15rem;
+  font-size: 0.6875rem;
+  line-height: 1.5;
+  color: var(--text-faint);
+}
+
+/* -------------------------------------------------------- physics check --- */
+
+.physics__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.physics__title {
+  margin: 0;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.physics__run {
+  padding: 0.28rem 0.75rem;
+  border: 1px solid var(--accent-dim);
+  border-radius: 2px;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.physics__run:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.physics__run:disabled {
+  border-color: var(--edge);
+  color: var(--text-faint);
+  cursor: default;
+}
+
+.physics__blurb {
+  margin: 0.55rem 0 0;
+  font-size: 0.6875rem;
+  line-height: 1.55;
+  color: var(--text-faint);
+}
+
+.physics__blurb code {
+  font-size: 0.95em;
+  color: var(--text-dim);
+}
+
+.physics__error {
+  margin: 0.7rem 0 0;
+  font-size: 0.75rem;
+  color: var(--fail);
+}
+
+.physics__verdict {
+  margin: 0.85rem 0 0;
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+
+.physics__verdict.is-pass {
+  color: var(--pass);
+}
+
+.physics__verdict.is-fail {
+  color: var(--fail);
+}
+
+.physics__rays {
+  margin: 0.6rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.physics__rays li {
+  padding: 0.4rem 0 0.4rem 0.6rem;
+  border-left: 2px solid var(--edge);
+}
+
+.physics__rays li.is-pass {
+  border-left-color: var(--pass);
+}
+
+.physics__rays li.is-fail {
+  border-left-color: var(--fail);
+}
+
+.physics__ray-name {
+  display: block;
+  font-size: 0.6875rem;
+  color: var(--text-dim);
+}
+
+.physics__ray-detail {
+  display: block;
+  font-size: 0.625rem;
+  line-height: 1.5;
+  color: var(--text-faint);
+}
+
+.physics__facts {
+  margin: 0.75rem 0 0;
+}
+
+.physics__facts > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.15rem 0;
+}
+
+.physics__facts dt {
+  font-size: 0.6875rem;
+  color: var(--text-faint);
+}
+
+.physics__facts dd {
+  margin: 0;
+  font-size: 0.6875rem;
+  color: var(--text-dim);
+}
+
+.physics__note {
+  margin: 0.55rem 0 0;
+  font-size: 0.5625rem;
+  line-height: 1.6;
+  color: var(--text-faint);
+  word-spacing: 0.1em;
+}
+
+/* -------------------------------------------------------------- legend --- */
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 1.1rem;
+  margin: 0;
+}
+
+.legend > div {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+}
+
+.legend dt {
+  font-size: 0.625rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.legend dd {
+  margin: 0;
+  font-size: 0.6875rem;
+  color: var(--text-dim);
+}
+
+/* --------------------------------------------------------- unsupported --- */
+
+.unsupported {
+  display: grid;
+  place-content: center;
+  min-height: 100%;
+  padding: 2rem;
+}
+
+.unsupported__card {
+  max-width: 32rem;
+  padding: 1.75rem;
+  background: var(--panel);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius);
+}
+
+.unsupported__title {
+  margin: 0;
+  font-size: 1.0625rem;
+  font-weight: 600;
+}
+
+.unsupported__reason {
+  margin: 0.6rem 0 1.1rem;
+  color: var(--text-dim);
+  font-size: 0.875rem;
+}
+
+.unsupported__steps {
+  margin: 0;
+  padding-left: 1.1rem;
+  color: var(--text-faint);
+  font-size: 0.8125rem;
+  line-height: 1.7;
+}
+
+/* --------------------------------------------------------- responsive --- */
+
+@media (max-width: 46rem) {
+  .panel {
+    inset: auto 0.5rem 0.5rem;
+    width: auto;
+    max-height: 58%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .convergence__bar > span {
+    transition: none;
+  }
+}

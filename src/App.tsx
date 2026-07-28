@@ -1,0 +1,194 @@
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { DEFAULT_CAMERA } from './gpu/camera.ts';
+import { initWebGPU } from './gpu/device.ts';
+import {
+  DEFAULT_SCENE,
+  KerrRenderer,
+  type RendererStats,
+  type SceneParams,
+} from './gpu/KerrRenderer.ts';
+import {
+  validatePhysicsOnGpu,
+  type ValidationReport,
+} from './gpu/validatePhysics.ts';
+import { Controls } from './ui/Controls.tsx';
+import { attachOrbitControls } from './ui/orbitControls.ts';
+import { PhysicsCheck } from './ui/PhysicsCheck.tsx';
+import { Unsupported } from './ui/Unsupported.tsx';
+
+type Status =
+  | { kind: 'starting' }
+  | { kind: 'ready' }
+  | { kind: 'unsupported'; reason: string };
+
+type NumericKey = 'spin' | 'diskOuterRadius' | 'resolutionScale' | 'exposure';
+
+export default function App() {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const rendererRef = useRef<KerrRenderer | null>(null);
+
+  const [status, setStatus] = useState<Status>({ kind: 'starting' });
+  const [scene, setScene] = useState<SceneParams>(DEFAULT_SCENE);
+  const [stats, setStats] = useState<RendererStats | null>(null);
+  const [cameraRadius, setCameraRadius] = useState(DEFAULT_CAMERA.radius);
+
+  const [checkStatus, setCheckStatus] = useState<'idle' | 'running' | 'done'>(
+    'idle',
+  );
+  const [report, setReport] = useState<ValidationReport | null>(null);
+  const [checkError, setCheckError] = useState<string | null>(null);
+
+  // Device and renderer lifecycle. Runs once; the cancelled flag guards against
+  // StrictMode's double-invoke in development.
+  useEffect(() => {
+    let cancelled = false;
+    let detachControls: (() => void) | undefined;
+
+    const runPhysicsCheck = async (device: GPUDevice) => {
+      setCheckStatus('running');
+      setCheckError(null);
+      try {
+        const result = await validatePhysicsOnGpu(device);
+        if (!cancelled) setReport(result);
+      } catch (error) {
+        if (!cancelled) {
+          setCheckError(
+            error instanceof Error ? error.message : 'The physics check failed.',
+          );
+        }
+      } finally {
+        if (!cancelled) setCheckStatus('done');
+      }
+    };
+
+    const start = async () => {
+      const init = await initWebGPU();
+      if (cancelled) return;
+
+      if (!init.ok) {
+        setStatus({ kind: 'unsupported', reason: init.reason });
+        return;
+      }
+
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+
+      const { device } = init.context;
+      device.addEventListener('uncapturederror', (event) => {
+        console.error('WebGPU error:', event.error);
+      });
+
+      const watchForDeviceLoss = async () => {
+        const info = await device.lost;
+        if (cancelled) return;
+        setStatus({
+          kind: 'unsupported',
+          reason: `The GPU device was lost (${info.reason}): ${info.message}`,
+        });
+      };
+      void watchForDeviceLoss();
+
+      try {
+        const renderer = await KerrRenderer.create(device, canvas);
+        if (cancelled) {
+          renderer.dispose();
+          return;
+        }
+
+        rendererRef.current = renderer;
+        renderer.onStats((next) => {
+          setStats(next);
+          setCameraRadius(renderer.camera.radius);
+        });
+        detachControls = attachOrbitControls(canvas, renderer);
+        renderer.start();
+        setStatus({ kind: 'ready' });
+
+        if (new URLSearchParams(globalThis.location.search).has('validate')) {
+          void runPhysicsCheck(device);
+        }
+      } catch (error) {
+        setStatus({
+          kind: 'unsupported',
+          reason:
+            error instanceof Error
+              ? error.message
+              : 'The renderer failed to start.',
+        });
+      }
+    };
+
+    void start();
+
+    return () => {
+      cancelled = true;
+      detachControls?.();
+      rendererRef.current?.dispose();
+      rendererRef.current = null;
+    };
+  }, []);
+
+  // Push UI parameters down to the renderer.
+  useEffect(() => {
+    rendererRef.current?.setScene(scene);
+  }, [scene]);
+
+  const handleNumericChange = useCallback((key: NumericKey, value: number) => {
+    setScene((current) => ({ ...current, [key]: value }));
+  }, []);
+
+  const handleDiskToggle = useCallback((diskEnabled: boolean) => {
+    setScene((current) => ({ ...current, diskEnabled }));
+  }, []);
+
+  const handleRunCheck = useCallback(() => {
+    const renderer = rendererRef.current;
+    if (!renderer) return;
+
+    const run = async () => {
+      setCheckStatus('running');
+      setCheckError(null);
+      try {
+        setReport(await validatePhysicsOnGpu(renderer.device));
+      } catch (error) {
+        setCheckError(
+          error instanceof Error ? error.message : 'The physics check failed.',
+        );
+      } finally {
+        setCheckStatus('done');
+      }
+    };
+    void run();
+  }, []);
+
+  if (status.kind === 'unsupported') {
+    return <Unsupported reason={status.reason} />;
+  }
+
+  return (
+    <main className="stage">
+      <canvas
+        ref={canvasRef}
+        className="stage__canvas"
+        aria-label="Kerr black hole render"
+      />
+      {status.kind === 'starting' ? (
+        <p className="stage__booting">Starting the GPU…</p>
+      ) : null}
+      <Controls
+        scene={scene}
+        stats={stats}
+        cameraRadius={cameraRadius}
+        onNumericChange={handleNumericChange}
+        onDiskToggle={handleDiskToggle}
+      >
+        <PhysicsCheck
+          status={checkStatus}
+          report={report}
+          error={checkError}
+          onRun={handleRunCheck}
+        />
+      </Controls>
+    </main>
+  );
+}
