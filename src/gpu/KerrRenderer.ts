@@ -26,22 +26,29 @@ export type SceneParams = {
   exposure: number;
   bloomThreshold: number;
   bloomStrength: number;
+  dopplerBeaming: number;
 };
 
 export const DEFAULT_SCENE: SceneParams = {
   spin: 0.85,
-  diskOuterRadius: 14,
+  diskOuterRadius: 20,
   diskEnabled: true,
   // Not 1.0: integrated geodesics are expensive enough that full device
   // resolution is punishing on integrated GPUs. The image still converges to a
   // clean result while the camera is still — raise this if your GPU has room.
   resolutionScale: 0.75,
   maxSteps: 450,
-  exposure: 1.2,
+  exposure: 1.15,
   // High enough that only the disk and the brightest stars glow. Lower it and
   // the whole starfield blooms, which mostly just reveals the grid the stars sit on.
-  bloomThreshold: 1.1,
-  bloomStrength: 0.9,
+  // Bloom is additive, so a bright ring around a dark shadow bleeds inward.
+  // Keep the threshold high and the strength moderate or the shadow — the one
+  // thing that must stay black — fills with haze.
+  bloomThreshold: 0.9,
+  bloomStrength: 0.7,
+  // Defaults to mostly suppressed, matching how the disk is usually depicted.
+  // Push it to 1 for the physically honest asymmetry.
+  dopplerBeaming: 0.15,
 };
 
 /** Bloom runs at this fraction of the canvas — a wide, soft glow needs no detail. */
@@ -348,7 +355,8 @@ export class KerrRenderer {
       next.spin !== previous.spin ||
       next.diskOuterRadius !== previous.diskOuterRadius ||
       next.diskEnabled !== previous.diskEnabled ||
-      next.maxSteps !== previous.maxSteps;
+      next.maxSteps !== previous.maxSteps ||
+      next.dopplerBeaming !== previous.dopplerBeaming;
 
     if (affectsTracing) {
       this.resetAccumulation();
@@ -585,6 +593,7 @@ export class KerrRenderer {
       exposure: this.#scene.exposure,
       bloomThreshold: this.#scene.bloomThreshold,
       bloomStrength: this.#scene.bloomStrength,
+      dopplerBeaming: this.#scene.dopplerBeaming,
     };
   }
 

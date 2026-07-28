@@ -56,7 +56,7 @@ const O2: f32 = 3.2307692308;
 
 /// Spreads the blur wider than a single Gaussian pass would, so the glow reaches
 /// well beyond the bright pixels that generated it.
-const BLOOM_SPREAD: f32 = 3.4;
+const BLOOM_SPREAD: f32 = 2.6;
 
 /// Isolates the part of the image bright enough to glow, with a soft knee so the
 /// bloom fades in rather than switching on at a hard edge.

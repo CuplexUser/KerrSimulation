@@ -37,22 +37,24 @@ struct Uniforms {
 const R2_A1: f32 = 0.7548776662466927;
 const R2_A2: f32 = 0.5698402909980532;
 
-// Five-stop ramp across the observed temperature, which spans a far wider gamut
-// than a two-colour blend: crimson at the cool receding rim, through orange and
-// amber gold, into white, and finally blue-white where the approaching limb is
-// both hottest and blueshifted. The blue end is not decoration — a relativistic
-// Doppler factor shifts observed temperature as T_obs = g * T_emit, so the
-// approaching side genuinely runs bluer.
-const DISK_C0: vec3f = vec3f(0.50, 0.02, 0.04);
-const DISK_C1: vec3f = vec3f(1.0, 0.20, 0.03);
-const DISK_C2: vec3f = vec3f(1.0, 0.64, 0.16);
-const DISK_C3: vec3f = vec3f(1.0, 0.93, 0.78);
-const DISK_C4: vec3f = vec3f(0.66, 0.82, 1.0);
-/// Scales the emissivity profile so the beamed inner edge lands near the top of
-/// the tone curve without clipping, leaving the outer disk in its linear range.
-/// Raise it and the hot core blows out to flat white, taking the blue end of the
-/// ramp with it — everything above the clip point is white regardless of tint.
-const DISK_BRIGHTNESS: f32 = 3.0;
+// Five-stop ramp across the observed temperature: near-black ember at the cool
+// outer rim, through deep red and orange, into white at the hottest radii, and
+// finally blue-white.
+//
+// The blue end is real physics, not decoration — a relativistic Doppler factor
+// shifts observed temperature as T_obs = g * T_emit, so an approaching limb
+// genuinely runs bluer. It only appears when the Doppler control is turned up;
+// at the default the disk stays in the black-to-white range, which is the look
+// the film went for after deliberately suppressing beaming.
+const DISK_C0: vec3f = vec3f(0.16, 0.012, 0.004);
+const DISK_C1: vec3f = vec3f(0.85, 0.14, 0.012);
+const DISK_C2: vec3f = vec3f(1.0, 0.47, 0.09);
+const DISK_C3: vec3f = vec3f(1.0, 0.88, 0.62);
+const DISK_C4: vec3f = vec3f(0.80, 0.90, 1.0);
+/// Scales the emissivity profile so the hot inner edge lands near the top of the
+/// tone curve without clipping, leaving the rest of the disk in its linear range.
+/// Large because it is normalising a T^4 profile, whose peak is only ~0.04.
+const DISK_BRIGHTNESS: f32 = 26.0;
 
 fn hash2(p: vec2u) -> vec2f {
   var v = p * vec2u(1664525u, 1013904223u);
@@ -134,20 +136,15 @@ fn starLayer(fuv: vec3f, density: f32, sparsity: f32, seed: f32) -> f32 {
 fn background(d: vec3f) -> vec3f {
   let fuv = cubeFace(d);
 
-  // Cool teal-to-indigo cast across the sky. It sits opposite the disk's amber
-  // on the colour wheel, so it widens the overall gamut while staying dim enough
-  // never to compete with the disk itself.
+  // Very nearly black. A bright, busy sky flattens the contrast that makes the
+  // disk read as incandescent, so the only ambient light here is a barely
+  // perceptible cool cast to keep it from banding to flat zero.
   let axis = clamp(d.z * 0.5 + 0.5, 0.0, 1.0);
-  let band = exp(-d.z * d.z * 5.0);
-  var col = mix(vec3f(0.004, 0.010, 0.014), vec3f(0.009, 0.008, 0.022), axis);
+  var col = mix(vec3f(0.0016, 0.0022, 0.0038), vec3f(0.0028, 0.0030, 0.0060), axis);
 
-  // A faint dust lane near the equatorial plane, warmed slightly so it reads as
-  // part of the same scene as the disk.
-  col += vec3f(0.020, 0.014, 0.016) * band * 0.55;
-
-  // Two star layers at different scales.
-  let bright = starLayer(fuv, 46.0, 0.055, 0.0);
-  let faint = starLayer(fuv, 115.0, 0.09, 31.0);
+  // Sparse, so individual stars read against the black rather than forming a haze.
+  let bright = starLayer(fuv, 46.0, 0.030, 0.0);
+  let faint = starLayer(fuv, 115.0, 0.045, 31.0);
 
   // Stars span their own range of spectral classes rather than all being white.
   let tintSeed = hash1(floor(fuv * 60.0));
@@ -157,7 +154,7 @@ fn background(d: vec3f) -> vec3f {
     tintSeed > 0.5,
   );
 
-  col += tint * (bright * 1.15 + faint * 0.35);
+  col += tint * (bright * 0.80 + faint * 0.22);
   return col;
 }
 
@@ -218,19 +215,40 @@ fn diskColor(xc: vec3f, pc: vec3f, rc: f32, a: f32) -> vec3f {
 
   let lorentz = inverseSqrt(max(1.0 - speed * speed, 1e-4));
   let doppler = 1.0 / (lorentz * (1.0 - dot(beta, toObserver)));
-  let beaming = clamp(pow(max(doppler, 1e-3), 3.0), 0.03, 16.0);
+
+  // How much relativistic beaming to apply, 0 to 1. Interstellar's visual
+  // effects team suppressed this outright: the physically correct asymmetry
+  // makes one limb far brighter than the other, which reads as an error rather
+  // than as physics. At 0 the disk is brightness-symmetric like the film; at 1
+  // it is the honest g^3 boost.
+  let beamAmount = U.band.z;
+  let beaming = mix(
+    1.0,
+    clamp(pow(max(doppler, 1e-3), 3.0), 0.03, 16.0),
+    beamAmount,
+  );
 
   // Orbital shear smears any structure azimuthally, so concentric striation is
-  // the physically-motivated texture for a disk. Logarithmic spacing keeps the
-  // bands roughly even across the annulus.
-  let rings = 1.0 - 0.20 * pow(0.5 + 0.5 * sin(log(max(rc, 1e-3)) * 22.0), 2.0);
+  // the physically-motivated texture for a disk. Two octaves at logarithmic
+  // spacing, raised to a power so the peaks come out as thin bright filaments
+  // rather than broad sinusoidal bands.
+  let lr = log(max(rc, 1e-3));
+  let coarse = pow(0.5 + 0.5 * sin(lr * 31.0), 3.0);
+  let fine = pow(0.5 + 0.5 * sin(lr * 67.0 + 1.7), 5.0);
+  let filaments = 0.70 + 0.34 * coarse + 0.20 * fine;
 
-  let emissivity = pow(temperature, 3.0) * beaming * DISK_BRIGHTNESS * rings;
+  // Stefan-Boltzmann: a thermal emitter radiates as T^4. Combined with the
+  // r^-0.75 temperature law that puts the outer rim at a few percent of the peak,
+  // which is what concentrates the disk into a thin bright band with a dim tail
+  // instead of a broad filled wedge.
+  let emissivity =
+    pow(temperature, 4.0) * beaming * DISK_BRIGHTNESS * filaments;
 
   // Observed temperature, not emitted: the Doppler factor shifts it directly,
-  // T_obs = g * T_emit. That single term is what carries the disk from crimson
-  // on the receding rim to blue-white on the approaching limb.
-  let observed = clamp(temperature * doppler * 1.45, 0.0, 1.0);
+  // T_obs = g * T_emit. Blended by the same control as the beaming, so turning
+  // Doppler off leaves a purely radial colour gradient.
+  let shifted = mix(1.0, doppler, beamAmount);
+  let observed = clamp(temperature * shifted * 2.0, 0.0, 1.0);
   let tint = diskRamp(observed);
 
   // Soft edges so the annulus does not terminate in a hard ring.

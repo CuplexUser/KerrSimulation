@@ -21,6 +21,8 @@ export type RenderParams = {
   exposure: number;
   bloomThreshold: number;
   bloomStrength: number;
+  /** 0 = brightness-symmetric disk (the film look), 1 = full relativistic g^3. */
+  dopplerBeaming: number;
 };
 
 export type UniformInput = {
@@ -51,7 +53,7 @@ export type UniformInput = {
  *   params   vec4  spin, rOuter, rIsco, rPlus
  *   frame    vec4  frameIndex, traceResX, traceResY, exposure
  *   options  vec4  diskEnabled, maxSteps, canvasW, canvasH
- *   band     vec4  bandOffset, bandHeight, unused, unused
+ *   band     vec4  bandOffset, bandHeight, dopplerBeaming, unused
  *   bloom    vec4  bloomW, bloomH, threshold, strength
  */
 export function packUniforms(target: Float32Array, input: UniformInput): void {
@@ -106,7 +108,7 @@ export function packUniforms(target: Float32Array, input: UniformInput): void {
 
   target[28] = bandOffset;
   target[29] = bandHeight;
-  target[30] = 0;
+  target[30] = params.dopplerBeaming;
   target[31] = 0;
 
   target[32] = bloomWidth;

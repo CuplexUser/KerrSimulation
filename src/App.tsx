@@ -26,7 +26,8 @@ type NumericKey =
   | 'diskOuterRadius'
   | 'resolutionScale'
   | 'exposure'
-  | 'bloomStrength';
+  | 'bloomStrength'
+  | 'dopplerBeaming';
 
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);

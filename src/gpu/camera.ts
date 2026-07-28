@@ -37,14 +37,18 @@ export const MIN_RADIUS = 6;
 export const MAX_RADIUS = 55;
 
 /**
- * Near-equatorial and far enough out that a 14 M disk sits comfortably inside a
- * 45-degree field rather than filling it. The shallow elevation is what makes
- * the lensed far side of the disk arc over the shadow.
+ * Almost exactly edge-on, and far enough out that the disk sits inside the field
+ * rather than filling it.
+ *
+ * The shallow elevation is doing most of the visual work: it is what collapses
+ * the disk into a thin plane and lets the lensed far side arc up over the shadow
+ * as a separate band. Tilt much above ~10 degrees and it reads as a thick wedge
+ * instead.
  */
 export const DEFAULT_CAMERA: CameraState = {
   azimuth: 0.6,
-  elevation: 0.16,
-  radius: 32,
+  elevation: 0.055,
+  radius: 40,
   fovDegrees: 45,
 };
 

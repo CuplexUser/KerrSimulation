@@ -11,7 +11,8 @@ type NumericKey =
   | 'diskOuterRadius'
   | 'resolutionScale'
   | 'exposure'
-  | 'bloomStrength';
+  | 'bloomStrength'
+  | 'dopplerBeaming';
 
 type Props = {
   scene: SceneParams;
@@ -167,6 +168,17 @@ export function Controls({
           step={0.5}
           value={scene.diskOuterRadius}
           format={formatRadius}
+          onChange={onNumericChange}
+        />
+        <Slider
+          name="dopplerBeaming"
+          label="Doppler"
+          hint="How much relativistic beaming to show. Films suppress it — the real asymmetry looks like a bug."
+          min={0}
+          max={1}
+          step={0.01}
+          value={scene.dopplerBeaming}
+          format={formatPercent}
           onChange={onNumericChange}
         />
         <Slider
