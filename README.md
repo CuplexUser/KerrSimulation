@@ -16,8 +16,22 @@ pnpm dev
 Needs WebGPU — Chrome or Edge 113+ with hardware acceleration on. If the device
 is unavailable the app says so and explains what to check.
 
-Drag to orbit, scroll to zoom. Sliders control spin, disk outer radius, render
-resolution, and exposure.
+Drag to orbit, scroll to zoom. Sliders control spin, disk outer radius, disk
+thickness, Doppler beaming, render resolution, exposure and glow. The control
+panel can be dragged, resized and collapsed — see [The panel](#the-panel).
+
+## Deploying it
+
+`.github/workflows/deploy.yml` builds and publishes to GitHub Pages on every push
+to `main` or `master`. Enable it once under **Settings → Pages → Source → GitHub
+Actions**. The workflow runs lint, typecheck and the physics suite before it will
+publish anything.
+
+`vite.config.ts` reads `GITHUB_REPOSITORY` to set Vite's `base`, so a project
+site served from `/<repo>/` gets the right asset paths without the repository
+name being written down anywhere. Locally the variable is unset and the base
+stays `/`. Pages serves over HTTPS, which WebGPU requires — opening `dist/`
+from the filesystem will not work.
 
 ## The physics
 
@@ -56,7 +70,7 @@ The accretion disk is deliberately stylized — a temperature falloff, the stand
 Shakura-Sunyaev inner-boundary factor, and a crude Doppler beaming term. It is not
 radiative transfer.
 
-Colour comes from the *observed* temperature, `T_obs = g · T_emit`, where `g` is the
+Color comes from the *observed* temperature, `T_obs = g · T_emit`, where `g` is the
 Doppler factor. That single term carries the disk from crimson on the receding rim
 through amber to blue-white on the approaching limb, and it is why the two sides
 look so different.
@@ -98,8 +112,31 @@ src/gpu/
     bloom.wgsl                  bright pass and separable blur
     present.wgsl                composite, tone map onto the swap chain
     validate.wgsl               single-ray invariant tracking
-src/ui/                         panel, orbit controls, radial scale
+src/ui/
+  Controls.tsx                  the panel
+  usePanelLayout.ts             drag, resize, collapse, persistence
+  orbitControls.ts              pointer and wheel to camera
+  RadialScale.tsx               horizon / ISCO / disk / camera on one axis
 ```
+
+## The panel
+
+Drag the header to move it, the bottom-right grip to resize, and the chevron (or
+a double-click on the header) to collapse it to a title bar that still shows the
+sample count. Position, size and collapsed state persist across reloads, and it
+is clamped to stay fully on screen — otherwise the resize grip can end up past
+the bottom edge with no way to get it back.
+
+None of that touches the renderer. The panel floats over the canvas rather than
+sharing layout with it, so moving or resizing it does not resize the swap chain
+and never discards accumulated samples; a panel drag costs no trace frames.
+Gestures write geometry straight to the DOM and commit to React state once on
+release, for the same reason the orbit camera lives in a ref — a 60 Hz pointer
+stream must not reach the render path.
+
+**Restore defaults** puts every control *and* the camera back to their starting
+values. **Reset panel** restores the panel's own geometry, which is separate —
+you can rearrange the workspace without disturbing the scene, and vice versa.
 
 ## How the rendering works
 
@@ -134,7 +171,43 @@ pull if the interaction still feels heavy.
 Finally, a three-pass bloom (bright pass, then a separable blur at quarter
 resolution) is composited additively before tone mapping. Without it the only way
 to make the disk read as luminous is to raise the level until the core clips,
-which flattens the whole disk to white and discards the colour ramp.
+which flattens the whole disk to white and discards the color ramp.
+
+### Lensing level of detail
+
+Right against the shadow there is a razor-thin bright arc, and it used to render
+ragged and stair-stepped. Working out why took several wrong guesses, so the
+result is worth writing down.
+
+The direct image of the disk maps screen position to disk radius smoothly. Every
+*higher-order* image — light that wound around the hole one or more times before
+reaching the camera — is compressed exponentially, and by the second or third
+pass the entire radial profile is squeezed into a band thinner than one pixel.
+Point sampling that is aliasing a signal with no band limit.
+
+What settled it was rendering the disk in a flat color: the same arcs came out
+perfectly smooth. So the geometry was never wrong — the raggedness was the
+*shading* being sampled below its resolvable scale.
+
+The fix is a level of detail keyed to the image order, which the tracer already
+knows because it counts equatorial crossings. Past the first image the radial
+detail is faded out: the striation goes to its phase average and the emission
+profile settles to the bright inner ring that dominates the stack anyway. It is
+the trade a mip level makes for a minified texture — the detail is not
+resolvable, so don't pretend to resolve it.
+
+Ruled out by measurement first, in case they look tempting: the integration step
+budget (450 → 2000 changed nothing), the striation texture (disabling it entirely
+changed nothing), and correlation in the sample sequence (permuting the R2 index
+per pixel changed nothing). Giving the disk finite thickness also did not fix it,
+though the control survives as a real feature.
+
+One genuine bug did turn up next door. A ray grazing the equatorial plane could
+enter and leave it inside a single RK4 step, and since the disk test only sees
+one sign change per step, that crossing was dropped entirely. `planeLimitedStep`
+now shortens any step that would jump the plane. Its derivative comes from the
+RK4 stage-one evaluation, which the loop hoists and feeds back in through
+`rk4StepFrom`, so the check costs no extra metric evaluations — it removed one.
 
 ## Scripts
 

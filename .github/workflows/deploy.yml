@@ -1,0 +1,66 @@
+name: Deploy to GitHub Pages
+
+# WebGPU needs a secure context, so the site has to be served over HTTPS —
+# GitHub Pages is, which is why this works at all. Opening dist/index.html
+# from the filesystem will not.
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never let two deploys race, but let an in-flight one finish rather than
+# canceling it half way through publishing.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # The same gates as local development. validate:physics is cheap, runs
+      # headless, and is the check that would catch a sign error in the geodesic
+      # port — exactly the kind of regression that still renders a plausible
+      # looking image, so it is worth blocking a deploy on.
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm validate:physics
+
+      # vite.config.ts reads GITHUB_REPOSITORY to set `base`, so the asset paths
+      # match the project-page subdirectory without hardcoding the repo name.
+      - run: pnpm build
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

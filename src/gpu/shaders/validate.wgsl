@@ -14,7 +14,7 @@
 struct RaySpec {
   // xyz = origin, w = spin a
   origin: vec4f,
-  // xyz = direction (need not be normalised), w = max steps
+  // xyz = direction (need not be normalized), w = max steps
   direction: vec4f,
 }
 

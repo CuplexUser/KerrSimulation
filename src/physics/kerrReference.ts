@@ -42,6 +42,8 @@ export const STEP_MAX = 0.9;
 export const ESCAPE_RADIUS = 60;
 export const GRAD_EPS = 0.0015;
 export const HORIZON_PAD = 1.02;
+export const PLANE_APPROACH = 0.85;
+export const PLANE_STEP_MIN = 0.01;
 
 // ---------------------------------------------------------------------------
 // Kerr-Schild metric quantities
@@ -187,6 +189,21 @@ export const adaptiveStep = (r: number, stepScale: number = STEP_SCALE): number 
     Math.max(r * stepScale, STEP_MIN * (stepScale / STEP_SCALE)),
     STEP_MAX,
   );
+
+/**
+ * Shorten a step so it cannot carry the ray through the equatorial plane.
+ *
+ * Mirrors planeLimitedStep in kerr_math.wgsl. Only the render path uses it —
+ * the disk crossing test sees at most one sign change per step, so a ray that
+ * enters and leaves the plane within one step is missed and integrates on into
+ * the horizon. It is not part of the geodesic itself, so the validation rays do
+ * not use it; it only ever makes a step smaller, which cannot hurt conservation.
+ */
+export function planeLimitedStep(base: number, z: number, dz: number): number {
+  const speed = Math.abs(dz);
+  if (speed < 1e-6) return base;
+  return Math.min(base, Math.max((Math.abs(z) / speed) * PLANE_APPROACH, PLANE_STEP_MIN));
+}
 
 /**
  * Scale a unit direction into a null momentum at x, by solving H = 0 for s in p = s*d:

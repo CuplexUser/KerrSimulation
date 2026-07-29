@@ -22,6 +22,10 @@ const KERR_STEP_MIN: f32 = 0.015;
 const KERR_STEP_MAX: f32 = 0.9;
 const KERR_ESCAPE_RADIUS: f32 = 60.0;
 const KERR_HORIZON_PAD: f32 = 1.02;
+// Fraction of the estimated distance to the equatorial plane a step may cover,
+// and the floor that stops the approach from stalling. See planeLimitedStep.
+const KERR_PLANE_APPROACH: f32 = 0.85;
+const KERR_PLANE_STEP_MIN: f32 = 0.01;
 
 // Central-difference step for dH/dx. Pipeline-overridable so the validation
 // harness can sweep it on the actual GPU: the value 0.0015 was tuned against an
@@ -116,10 +120,13 @@ fn geodesicRHS(x: vec3f, p: vec3f, a: f32) -> Deriv {
   return d;
 }
 
-/// One classical RK4 step of the coupled (x, p) system.
-fn rk4Step(st: State, a: f32, h: f32) -> State {
+/// One classical RK4 step, given a k1 the caller has already evaluated.
+///
+/// k1 is just geodesicRHS at the current state, so a caller that needs the
+/// derivative anyway — to steer the step size, or to read off the coordinate
+/// velocity — can hand it back instead of paying for a fifth metric evaluation.
+fn rk4StepFrom(st: State, k1: Deriv, a: f32, h: f32) -> State {
   let half = h * 0.5;
-  let k1 = geodesicRHS(st.x, st.p, a);
   let k2 = geodesicRHS(st.x + k1.dx * half, st.p + k1.dp * half, a);
   let k3 = geodesicRHS(st.x + k2.dx * half, st.p + k2.dp * half, a);
   let k4 = geodesicRHS(st.x + k3.dx * h, st.p + k3.dp * h, a);
@@ -131,9 +138,38 @@ fn rk4Step(st: State, a: f32, h: f32) -> State {
   return out;
 }
 
+/// One classical RK4 step of the coupled (x, p) system.
+fn rk4Step(st: State, a: f32, h: f32) -> State {
+  return rk4StepFrom(st, geodesicRHS(st.x, st.p, a), a, h);
+}
+
 /// Smaller steps near the hole, larger far away.
 fn adaptiveStep(r: f32) -> f32 {
   return clamp(r * KERR_STEP_SCALE, KERR_STEP_MIN, KERR_STEP_MAX);
+}
+
+/// Shorten a step so it cannot carry the ray through the equatorial plane.
+///
+/// The disk test looks for a sign change in z between two consecutive states, so
+/// it sees at most one crossing per step. A ray that enters and leaves the plane
+/// inside a single step is missed entirely and integrates on into the horizon —
+/// and the rays that do this are exactly the strongly-lensed ones grazing the
+/// plane near the photon ring, where a missed crossing turns a bright pixel
+/// black. Because the miss depends on where the step boundaries happen to land,
+/// the result is a regular sawtooth along the edge rather than noise, so it does
+/// not average away with more samples.
+///
+/// |z| / |dz/dlambda| is the linear estimate of the parameter distance to the
+/// plane. Stopping just short of it means the following step crosses from close
+/// range, which both guarantees the sign change is seen and makes the linear
+/// interpolation of the crossing point accurate. KERR_PLANE_STEP_MIN keeps the
+/// approach from becoming Zeno's paradox.
+fn planeLimitedStep(base: f32, z: f32, dz: f32) -> f32 {
+  let speed = abs(dz);
+  if (speed < 1e-6) {
+    return base;
+  }
+  return min(base, max(abs(z) / speed * KERR_PLANE_APPROACH, KERR_PLANE_STEP_MIN));
 }
 
 /// Outer event horizon.

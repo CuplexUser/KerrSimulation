@@ -27,7 +27,8 @@ type NumericKey =
   | 'resolutionScale'
   | 'exposure'
   | 'bloomStrength'
-  | 'dopplerBeaming';
+  | 'dopplerBeaming'
+  | 'diskThickness';
 
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -44,10 +45,10 @@ export default function App() {
   const [report, setReport] = useState<ValidationReport | null>(null);
   const [checkError, setCheckError] = useState<string | null>(null);
 
-  // Device and renderer lifecycle. Runs once; the cancelled flag guards against
+  // Device and renderer lifecycle. Runs once; the canceled flag guards against
   // StrictMode's double-invoke in development.
   useEffect(() => {
-    let cancelled = false;
+    let canceled = false;
     let detachControls: (() => void) | undefined;
 
     const runPhysicsCheck = async (device: GPUDevice) => {
@@ -55,21 +56,21 @@ export default function App() {
       setCheckError(null);
       try {
         const result = await validatePhysicsOnGpu(device);
-        if (!cancelled) setReport(result);
+        if (!canceled) setReport(result);
       } catch (error) {
-        if (!cancelled) {
+        if (!canceled) {
           setCheckError(
             error instanceof Error ? error.message : 'The physics check failed.',
           );
         }
       } finally {
-        if (!cancelled) setCheckStatus('done');
+        if (!canceled) setCheckStatus('done');
       }
     };
 
     const start = async () => {
       const init = await initWebGPU();
-      if (cancelled) return;
+      if (canceled) return;
 
       if (!init.ok) {
         setStatus({ kind: 'unsupported', reason: init.reason });
@@ -86,7 +87,7 @@ export default function App() {
 
       const watchForDeviceLoss = async () => {
         const info = await device.lost;
-        if (cancelled) return;
+        if (canceled) return;
         setStatus({
           kind: 'unsupported',
           reason: `The GPU device was lost (${info.reason}): ${info.message}`,
@@ -96,7 +97,7 @@ export default function App() {
 
       try {
         const renderer = await KerrRenderer.create(device, canvas);
-        if (cancelled) {
+        if (canceled) {
           renderer.dispose();
           return;
         }
@@ -127,7 +128,7 @@ export default function App() {
     void start();
 
     return () => {
-      cancelled = true;
+      canceled = true;
       detachControls?.();
       rendererRef.current?.dispose();
       rendererRef.current = null;
@@ -145,6 +146,17 @@ export default function App() {
 
   const handleDiskToggle = useCallback((diskEnabled: boolean) => {
     setScene((current) => ({ ...current, diskEnabled }));
+  }, []);
+
+  // Scene and camera together — "defaults" means the view you started with, and
+  // restoring the sliders while leaving the camera somewhere else would only be
+  // half the job. updateCamera also resets the accumulation, which is required
+  // anyway since the image is no longer valid for the new parameters.
+  const handleRestoreDefaults = useCallback(() => {
+    setScene(DEFAULT_SCENE);
+    rendererRef.current?.updateCamera((camera) => {
+      Object.assign(camera, DEFAULT_CAMERA);
+    });
   }, []);
 
   const handleRunCheck = useCallback(() => {
@@ -187,6 +199,7 @@ export default function App() {
         cameraRadius={cameraRadius}
         onNumericChange={handleNumericChange}
         onDiskToggle={handleDiskToggle}
+        onRestoreDefaults={handleRestoreDefaults}
       >
         <PhysicsCheck
           status={checkStatus}

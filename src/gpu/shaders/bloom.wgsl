@@ -3,7 +3,7 @@
 // The accretion disk spans a huge dynamic range: the beamed inner edge is orders
 // of magnitude brighter than the outer rim. Without bloom the only way to make it
 // read as *luminous* is to raise the overall level until the core clips, which
-// flattens the whole disk to white and throws away the colour ramp with it.
+// flattens the whole disk to white and throws away the color ramp with it.
 //
 // Bright-pass at quarter resolution, separable Gaussian blur, then additive
 // composite in the present pass. Three cheap passes at 1/16 the pixel count —
@@ -54,9 +54,10 @@ const W2: f32 = 0.0702702703;
 const O1: f32 = 1.3846153846;
 const O2: f32 = 3.2307692308;
 
-/// Spreads the blur wider than a single Gaussian pass would, so the glow reaches
-/// well beyond the bright pixels that generated it.
-const BLOOM_SPREAD: f32 = 2.6;
+/// Widens the blur beyond a single Gaussian pass. Kept fairly tight on purpose:
+/// a wide spread smears the white core out over the orange body of the disk and
+/// the whole band reads as washed-out white rather than incandescent.
+const BLOOM_SPREAD: f32 = 1.7;
 
 /// Isolates the part of the image bright enough to glow, with a soft knee so the
 /// bloom fades in rather than switching on at a hard edge.

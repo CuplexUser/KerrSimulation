@@ -27,6 +27,7 @@ export type SceneParams = {
   bloomThreshold: number;
   bloomStrength: number;
   dopplerBeaming: number;
+  diskThickness: number;
 };
 
 export const DEFAULT_SCENE: SceneParams = {
@@ -38,17 +39,22 @@ export const DEFAULT_SCENE: SceneParams = {
   // clean result while the camera is still — raise this if your GPU has room.
   resolutionScale: 0.75,
   maxSteps: 450,
-  exposure: 1.15,
+  exposure: 1.3,
   // High enough that only the disk and the brightest stars glow. Lower it and
   // the whole starfield blooms, which mostly just reveals the grid the stars sit on.
   // Bloom is additive, so a bright ring around a dark shadow bleeds inward.
   // Keep the threshold high and the strength moderate or the shadow — the one
   // thing that must stay black — fills with haze.
-  bloomThreshold: 0.9,
-  bloomStrength: 0.7,
+  bloomThreshold: 0.95,
+  bloomStrength: 0.6,
   // Defaults to mostly suppressed, matching how the disk is usually depicted.
   // Push it to 1 for the physically honest asymmetry.
   dopplerBeaming: 0.15,
+  // Half-thickness as a fraction of radius. Small — the disk should still read
+  // as thin — but not zero: a mathematically flat disk produces lensed images
+  // thinner than a pixel next to the shadow, which no sample count can resolve.
+  // See slabEntry in trace.wgsl.
+  diskThickness: 0.0,
 };
 
 /** Bloom runs at this fraction of the canvas — a wide, soft glow needs no detail. */
@@ -346,17 +352,16 @@ export class KerrRenderer {
       return;
     }
 
-    // Exposure is applied at tone-map time, so changing it must not throw away
-    // samples that are already converged. Everything else changes what the rays
-    // actually do.
     // Exposure and bloom are applied at present time, so they must not throw
-    // away samples that are already converged.
+    // away samples that are already converged. Everything else changes what the
+    // rays actually do, and the accumulated image is no longer valid.
     const affectsTracing =
       next.spin !== previous.spin ||
       next.diskOuterRadius !== previous.diskOuterRadius ||
       next.diskEnabled !== previous.diskEnabled ||
       next.maxSteps !== previous.maxSteps ||
-      next.dopplerBeaming !== previous.dopplerBeaming;
+      next.dopplerBeaming !== previous.dopplerBeaming ||
+      next.diskThickness !== previous.diskThickness;
 
     if (affectsTracing) {
       this.resetAccumulation();
@@ -594,6 +599,7 @@ export class KerrRenderer {
       bloomThreshold: this.#scene.bloomThreshold,
       bloomStrength: this.#scene.bloomStrength,
       dopplerBeaming: this.#scene.dopplerBeaming,
+      diskThickness: this.#scene.diskThickness,
     };
   }
 

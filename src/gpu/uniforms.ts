@@ -23,6 +23,8 @@ export type RenderParams = {
   bloomStrength: number;
   /** 0 = brightness-symmetric disk (the film look), 1 = full relativistic g^3. */
   dopplerBeaming: number;
+  /** Disk half-thickness as a fraction of radius. 0 is a mathematical plane. */
+  diskThickness: number;
 };
 
 export type UniformInput = {
@@ -53,7 +55,7 @@ export type UniformInput = {
  *   params   vec4  spin, rOuter, rIsco, rPlus
  *   frame    vec4  frameIndex, traceResX, traceResY, exposure
  *   options  vec4  diskEnabled, maxSteps, canvasW, canvasH
- *   band     vec4  bandOffset, bandHeight, dopplerBeaming, unused
+ *   band     vec4  bandOffset, bandHeight, dopplerBeaming, diskThickness
  *   bloom    vec4  bloomW, bloomH, threshold, strength
  */
 export function packUniforms(target: Float32Array, input: UniformInput): void {
@@ -109,7 +111,7 @@ export function packUniforms(target: Float32Array, input: UniformInput): void {
   target[28] = bandOffset;
   target[29] = bandHeight;
   target[30] = params.dopplerBeaming;
-  target[31] = 0;
+  target[31] = params.diskThickness;
 
   target[32] = bloomWidth;
   target[33] = bloomHeight;

@@ -20,11 +20,11 @@ const sci = (n: number): string => n.toExponential(1);
 export function PhysicsCheck({ status, report, error, onRun }: Props) {
   return (
     <section className="panel__section physics" data-testid="physics-check">
-      <div className="physics__head">
-        <h2 className="physics__title">Physics check</h2>
+      <div className="section__head">
+        <h2 className="section__title">Physics check</h2>
         <button
           type="button"
-          className="physics__run"
+          className="section__action"
           onClick={onRun}
           disabled={status === 'running'}
         >

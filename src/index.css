@@ -2,7 +2,7 @@
  * Instrument panel over a full-bleed render.
  *
  * Ground (#18181c) and panel (#232328) are fixed by the brief. The accent moved
- * from the original #4a90e2 to its warm counterpart when the render was recoloured
+ * from the original #4a90e2 to its warm counterpart when the render was recolored
  * to Gargantua's palette — a cold blue chrome beside a gold disk reads as a
  * mistake. Same lightness and saturation, opposite hue.
  *
@@ -99,24 +99,79 @@ code {
 
 /* --------------------------------------------------------------- panel --- */
 
+/*
+ * A movable, resizable, collapsible instrument panel.
+ *
+ * The panel itself does not scroll — only .panel__scroll does. Pinning the
+ * header keeps the drag handle and the collapse control reachable no matter how
+ * far down the controls you are, and pinning the footer keeps the live render
+ * readouts in view, which is the whole point of having them.
+ */
+
 .panel {
   position: absolute;
   inset: 1rem auto 1rem 1rem;
   width: var(--panel-width);
   display: flex;
   flex-direction: column;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  background: color-mix(in srgb, var(--panel) 92%, transparent);
-  -webkit-backdrop-filter: blur(14px);
-  backdrop-filter: blur(14px);
+  overflow: hidden;
+  /* Only lightly translucent. The render behind it runs from near-black to a
+     blown-out disk, and at the transparency that looked good over empty sky the
+     hint text became unreadable the moment the panel crossed the disk. */
+  background: color-mix(in srgb, var(--panel) 96%, transparent);
+  -webkit-backdrop-filter: blur(18px);
+  backdrop-filter: blur(18px);
   border: 1px solid var(--edge);
   border-radius: var(--radius);
+  /* Lifted off a render that is nearly black in places, so the panel needs its
+     own edge definition rather than relying on contrast with what is behind. */
+  box-shadow:
+    0 1px 0 rgb(255 255 255 / 5%) inset,
+    0 24px 56px -20px rgb(0 0 0 / 85%);
+}
+
+/* Positioned inline by usePanelLayout; inset must not fight it. */
+.panel.is-floating {
+  inset: auto;
+}
+
+.panel[data-gesture] {
+  -webkit-user-select: none;
+  user-select: none;
+  /* Snappier feedback while it is under the pointer, and it lifts the panel
+     clear of the render so the edge stays legible mid-drag. */
+  border-color: var(--accent-dim);
+  box-shadow:
+    0 1px 0 rgb(255 255 255 / 7%) inset,
+    0 30px 64px -18px rgb(0 0 0 / 90%);
+}
+
+.panel[data-gesture='move'] .panel__head {
+  cursor: grabbing;
 }
 
 .panel__head {
-  padding: 0.9rem 1rem 0.8rem;
+  flex: none;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.85rem 0.7rem 0.8rem 1rem;
   border-bottom: 1px solid var(--edge-soft);
+  background: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--accent) 4%, transparent),
+    transparent
+  );
+  touch-action: none;
+}
+
+.panel.is-floating .panel__head {
+  cursor: grab;
+}
+
+.panel__heading {
+  min-width: 0;
+  flex: 1;
 }
 
 .panel__title {
@@ -135,14 +190,159 @@ code {
   line-height: 1.45;
 }
 
+/* Collapsed, the header is the only thing left, so it carries the readout that
+   matters most — how far the image has refined. */
+.panel__summary {
+  display: flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  margin: 0.4rem 0 0;
+}
+
+.panel__summary-count {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.9375rem;
+  color: var(--text);
+}
+
+.panel__summary-unit {
+  font-size: 0.6875rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.panel__collapse {
+  flex: none;
+  display: grid;
+  place-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: none;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.panel__collapse:hover {
+  border-color: var(--edge);
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.panel__collapse:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.panel__chevron {
+  width: 7px;
+  height: 7px;
+  border-left: 1.5px solid currentcolor;
+  border-bottom: 1.5px solid currentcolor;
+  transform: translateY(-2px) rotate(135deg);
+  transition: transform 160ms ease;
+}
+
+.panel.is-collapsed .panel__chevron {
+  transform: translateY(1px) rotate(-45deg);
+}
+
+.panel__scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--edge) transparent;
+}
+
+.panel__scroll::-webkit-scrollbar {
+  width: 10px;
+}
+
+.panel__scroll::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 5px;
+  background: var(--edge);
+  background-clip: content-box;
+}
+
+.panel__scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--accent-dim);
+  background-clip: content-box;
+}
+
+.panel.is-collapsed .panel__scroll,
+.panel.is-collapsed .panel__foot {
+  display: none;
+}
+
 .panel__section {
   padding: 0.75rem 1rem;
   border-bottom: 1px solid var(--edge-soft);
 }
 
 .panel__foot {
-  padding: 0.75rem 1rem;
-  margin-top: auto;
+  flex: none;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.7rem 1rem;
+  border-top: 1px solid var(--edge-soft);
+  background: color-mix(in srgb, var(--bg) 35%, transparent);
+}
+
+.panel__reset {
+  flex: none;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-faint);
+  font: inherit;
+  font-size: 0.625rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.panel__reset:hover {
+  color: var(--accent);
+}
+
+.panel__reset:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Resize grip. Sized well past the visual mark so it is actually grabbable. */
+.panel__grip {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 18px;
+  height: 18px;
+  cursor: nwse-resize;
+  touch-action: none;
+  background:
+    linear-gradient(
+        -45deg,
+        transparent 0 3px,
+        var(--edge) 3px 4.5px,
+        transparent 4.5px 6px,
+        var(--edge) 6px 7.5px,
+        transparent 7.5px
+      )
+      no-repeat right 3px bottom 3px / 12px 12px;
+}
+
+.panel__grip:hover,
+.panel[data-gesture='resize'] .panel__grip {
+  filter: brightness(1.8);
 }
 
 /* --------------------------------------------------------- convergence --- */
@@ -377,8 +577,7 @@ code {
 }
 
 .field__range:focus-visible,
-.toggle input:focus-visible + .toggle__box,
-.physics__run:focus-visible {
+.toggle input:focus-visible + .toggle__box {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
@@ -433,16 +632,20 @@ code {
   color: var(--text-faint);
 }
 
-/* -------------------------------------------------------- physics check --- */
+/* ------------------------------------------------------- section header --- */
 
-.physics__head {
+/* Shared by every titled section so the panel reads as one instrument rather
+   than a stack of unrelated widgets. */
+
+.section__head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 0.75rem;
+  margin-bottom: 0.7rem;
 }
 
-.physics__title {
+.section__title {
   margin: 0;
   font-size: 0.6875rem;
   font-weight: 600;
@@ -451,26 +654,40 @@ code {
   color: var(--text-faint);
 }
 
-.physics__run {
-  padding: 0.28rem 0.75rem;
-  border: 1px solid var(--accent-dim);
+.section__action {
+  flex: none;
+  padding: 0.25rem 0.6rem;
+  border: 1px solid var(--edge);
   border-radius: 2px;
   background: none;
-  color: var(--accent);
+  color: var(--text-dim);
   font: inherit;
-  font-size: 0.75rem;
+  font-size: 0.6875rem;
+  white-space: nowrap;
   cursor: pointer;
+  transition:
+    color 120ms ease,
+    border-color 120ms ease,
+    background-color 120ms ease;
 }
 
-.physics__run:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
+.section__action:hover:not(:disabled) {
+  border-color: var(--accent-dim);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
 }
 
-.physics__run:disabled {
-  border-color: var(--edge);
+.section__action:disabled {
   color: var(--text-faint);
   cursor: default;
 }
+
+.section__action:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* -------------------------------------------------------- physics check --- */
 
 .physics__blurb {
   margin: 0.55rem 0 0;
@@ -633,11 +850,19 @@ code {
 
 /* --------------------------------------------------------- responsive --- */
 
+/* Below this width the panel is a bottom sheet laid out entirely by CSS, and
+   usePanelLayout stands down — dragging a sheet around a phone is not useful,
+   so it reports floating: false and stops writing inline geometry. Collapsing
+   still works, and matters more here than anywhere else. */
 @media (max-width: 46rem) {
   .panel {
     inset: auto 0.5rem 0.5rem;
     width: auto;
     max-height: 58%;
+  }
+
+  .panel.is-collapsed {
+    max-height: none;
   }
 }
 
