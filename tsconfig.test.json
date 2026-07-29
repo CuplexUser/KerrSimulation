@@ -1,0 +1,31 @@
+{
+  /* The tests import both halves of the app: browser modules under src/gpu and
+     src/ui, and Node built-ins for the runner and for reading shader source off
+     disk. So this project needs the DOM lib *and* the Node types, which neither
+     tsconfig.app.json nor tsconfig.node.json provides on its own. */
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.test.tsbuildinfo",
+    "target": "es2023",
+    "lib": ["ES2023", "DOM"],
+    "module": "esnext",
+    "types": ["node", "vite/client", "@webgpu/types"],
+    "allowArbitraryExtensions": true,
+    "skipLibCheck": true,
+
+    /* Bundler mode, matching tsconfig.app.json — the tests resolve `?raw`
+       shader imports the same way the app does, via the loader hook in
+       test/support/wgslRaw.ts. */
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+
+    /* Linting */
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "erasableSyntaxOnly": true,
+    "noFallthroughCasesInSwitch": true
+  },
+  "include": ["test"]
+}

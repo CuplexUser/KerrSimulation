@@ -62,6 +62,25 @@
       "rules": {
         "eslint/no-console": "off"
       }
+    },
+    {
+      // The tests run under Node but drive browser modules, so both
+      // environments are in scope. The stand-ins in test/support impersonate
+      // WebGPU and DOM objects, which means casting through unknown and
+      // patching globals — both are the point rather than an oversight.
+      "files": ["test/**/*.ts"],
+      "env": { "browser": true, "node": true },
+      "rules": {
+        "eslint/no-console": "off",
+        "typescript/no-non-null-assertion": "off",
+        "unicorn/no-null": "off",
+        // node:test's describe/test return a promise the runner owns and awaits
+        // itself. Awaiting them at the call site is not how the API is used.
+        "typescript/no-floating-promises": "off",
+        // Narrowing a hand-built stub to GPUDevice or HTMLCanvasElement is how a
+        // test double is handed to the code under test.
+        "typescript/no-unsafe-type-assertion": "off"
+      }
     }
   ]
 }

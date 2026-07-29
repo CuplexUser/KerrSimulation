@@ -97,10 +97,46 @@ stale. Open the app and press **Run** under "Physics check", or load `/?validate
 `src/physics/kerrReference.ts` and `src/gpu/shaders/kerr_math.wgsl` are line-for-line
 mirrors of each other. Edit one, edit the other.
 
+## Testing it
+
+```bash
+pnpm test
+```
+
+A regression suite on Node's built-in runner — no test framework, no browser, no
+GPU. It covers what the physics harnesses do not:
+
+- **Shader contracts.** Every mirrored constant in `kerr_math.wgsl` is checked
+  against its `kerrReference.ts` counterpart, and the `Uniforms` struct in
+  `trace.wgsl` against the one in `present.wgsl` and the slot order
+  `packUniforms` writes. That drift is otherwise invisible: it fails at shader
+  compilation in a browser, or not at all — a uniform slot swapped with its
+  neighbour just renders the wrong picture at full speed.
+- **Render scheduling.** `KerrRenderer` is driven against a recording stand-in
+  device (`test/support/fakeWebGpu.ts`) with a fake clock, which pins down that
+  the bands of a pass tile the image exactly, that the presented texture is
+  always the last complete one, and that exposure and bloom do not throw away
+  converged samples while spin and step count do.
+- **Camera and input.** Basis orthonormality and handedness — a mirrored black
+  hole still looks like a black hole — plus drag/zoom direction and listener
+  teardown.
+- **The f64 reference**, as individual assertions rather than one exit code,
+  including the step-control helpers and the flat-space limits.
+
+Shader imports use Vite's `?raw`, which plain Node cannot resolve, so
+`test/support/wgslRaw.ts` installs a module hook that loads them. It goes in via
+`--import` because ESM links the whole graph before running anything.
+
+Two things stay out of reach headlessly, both by nature: the *bodies* of the WGSL
+functions, which only the in-app harness above can run, and the React components.
+
 ## Layout
 
 ```
 scripts/validate-physics.mts    Node assertion suite over the f64 reference
+test/                           regression suite (pnpm test)
+  support/wgslRaw.ts            module hook so Node can load `?raw` shaders
+  support/fakeWebGpu.ts         recording stand-in device, for the frame loop
 src/physics/kerrReference.ts    f64 reference implementation, shared by both harnesses
 src/gpu/
   KerrRenderer.ts               device, textures, pipelines, frame loop, resize
@@ -217,4 +253,5 @@ RK4 stage-one evaluation, which the loop hoists and feeds back in through
 | `pnpm build` | Typecheck and build |
 | `pnpm lint` | oxlint, type-aware |
 | `pnpm typecheck` | `tsc -b` |
+| `pnpm test` | Regression suite, `node --test` |
 | `pnpm validate:physics` | The Node conservation suite |

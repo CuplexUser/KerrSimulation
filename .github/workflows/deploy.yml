@@ -37,12 +37,18 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      # The same gates as local development. validate:physics is cheap, runs
-      # headless, and is the check that would catch a sign error in the geodesic
-      # port — exactly the kind of regression that still renders a plausible
-      # looking image, so it is worth blocking a deploy on.
+      # The same gates as local development. All of them are cheap, run headless,
+      # and target the same class of regression: one that still renders a
+      # plausible looking image. That is worth blocking a deploy on, because
+      # there is no other way to notice it.
+      #
+      # `test` covers the renderer's scheduling and the WGSL-to-TypeScript
+      # contracts against a stand-in device; `validate:physics` prints the
+      # geodesic invariants in full. Neither can exercise the shipped shader on
+      # real hardware — that is the in-app harness, which needs a GPU.
       - run: pnpm lint
       - run: pnpm typecheck
+      - run: pnpm test
       - run: pnpm validate:physics
 
       # vite.config.ts reads GITHUB_REPOSITORY to set `base`, so the asset paths

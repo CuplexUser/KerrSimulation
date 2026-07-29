@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "lint": "oxlint --type-aware",
     "typecheck": "tsc -b",
+    "test": "node --test --import ./test/support/wgslRaw.ts \"test/**/*.test.ts\"",
     "validate:physics": "node --experimental-strip-types scripts/validate-physics.mts"
   },
   "dependencies": {
