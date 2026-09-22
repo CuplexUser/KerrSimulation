@@ -182,6 +182,7 @@ describe('uniform buffer layout', () => {
     'bloom',
     'disk',
     'view',
+    'sky',
   ];
 
   test('trace.wgsl declares the expected fields in the expected order', () => {

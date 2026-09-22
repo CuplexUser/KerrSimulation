@@ -4,7 +4,7 @@ import {
   type RendererStats,
   type SceneParams,
 } from '../gpu/KerrRenderer.ts';
-import type { Shading } from '../gpu/uniforms.ts';
+import type { Background, Shading } from '../gpu/uniforms.ts';
 import { RadialScale } from './RadialScale.tsx';
 import { usePanelLayout } from './usePanelLayout.ts';
 
@@ -25,6 +25,7 @@ type Props = {
   onNumericChange: (key: NumericKey, value: number) => void;
   onDiskToggle: (enabled: boolean) => void;
   onShadingChange: (shading: Shading) => void;
+  onBackgroundChange: (background: Background) => void;
   onRestoreDefaults: () => void;
   onShowHelp: () => void;
   children?: React.ReactNode;
@@ -40,6 +41,29 @@ const formatKelvin = (v: number): string => `${Math.round(v).toLocaleString()} K
 const SHADING_OPTIONS: { value: Shading; label: string }[] = [
   { value: 'cinematic', label: 'Cinematic' },
   { value: 'physical', label: 'Physical' },
+];
+
+const BACKGROUND_OPTIONS: { value: Background; label: string; hint: string }[] = [
+  {
+    value: 'stars',
+    label: 'Stars',
+    hint: 'The film sky: sparse and dark, so the disk carries the picture.',
+  },
+  {
+    value: 'galaxy',
+    label: 'Galaxy',
+    hint: 'A crowded field and a bright Milky Way. Watch the band bend into arcs and reappear, mirrored, just outside the shadow.',
+  },
+  {
+    value: 'grid',
+    label: 'Grid',
+    hint: 'Latitude and longitude about the spin axis. Straight lines curve, the Einstein ring is where the grid folds over, and the whole sky repeats inside it.',
+  },
+  {
+    value: 'checker',
+    label: 'Checker',
+    hint: 'One color per quadrant, lighter in the north. Every lensed copy of a cell is identifiable, and the inner copies come out mirrored.',
+  },
 ];
 
 type SliderProps = {
@@ -93,14 +117,14 @@ function Slider({
   );
 }
 
-type SegmentProps = {
-  value: Shading;
+type SegmentProps<T extends string> = {
+  value: T;
   label: string;
   active: boolean;
-  onSelect: (value: Shading) => void;
+  onSelect: (value: T) => void;
 };
 
-function Segment({ value, label, active, onSelect }: SegmentProps) {
+function Segment<T extends string>({ value, label, active, onSelect }: SegmentProps<T>) {
   const handleClick = useCallback(() => onSelect(value), [onSelect, value]);
   return (
     <button
@@ -122,6 +146,7 @@ export function Controls({
   onNumericChange,
   onDiskToggle,
   onShadingChange,
+  onBackgroundChange,
   onRestoreDefaults,
   onShowHelp,
   children,
@@ -276,6 +301,32 @@ export function Controls({
               {scene.shading === 'physical'
                 ? 'Novikov-Thorne disk, blackbody color, and the exact redshift: gravity, Doppler and frame dragging in one factor. Nothing is tuned.'
                 : 'The film look: a hand-tuned color ramp with beaming mostly suppressed.'}
+            </p>
+          </div>
+
+          <div className="field">
+            <span className="field__head">
+              <span className="field__label" id="background-label">
+                Background
+              </span>
+            </span>
+            <div
+              className="segmented"
+              role="radiogroup"
+              aria-labelledby="background-label"
+            >
+              {BACKGROUND_OPTIONS.map((option) => (
+                <Segment
+                  key={option.value}
+                  value={option.value}
+                  label={option.label}
+                  active={scene.background === option.value}
+                  onSelect={onBackgroundChange}
+                />
+              ))}
+            </div>
+            <p className="field__hint">
+              {BACKGROUND_OPTIONS.find((option) => option.value === scene.background)?.hint}
             </p>
           </div>
 

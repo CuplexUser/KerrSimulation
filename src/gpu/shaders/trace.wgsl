@@ -42,6 +42,8 @@ struct Uniforms {
   disk: vec4f,
   // presented width, presented height, dither seed, pixel angle (radians)
   view: vec4f,
+  // background index, unused, unused, unused
+  sky: vec4f,
 }
 
 @group(0) @binding(0) var<uniform> U: Uniforms;
@@ -324,13 +326,10 @@ fn milkyWay(d: vec3f) -> vec3f {
   return vec3f(0.0075, 0.0068, 0.0058) * glow;
 }
 
-/// Deterministic — required for the accumulation to converge. The per-sample
-/// jitter is what antialiases the stars, so this is where progressive
-/// refinement is most visible.
-fn background(d: vec3f) -> vec3f {
-  // Very nearly black. A bright, busy sky flattens the contrast that makes the
-  // disk read as incandescent, so the only ambient light here is a barely
-  // perceptible cool cast to keep it from banding to flat zero.
+/// The film sky. Very nearly black: a bright, busy sky flattens the contrast
+/// that makes the disk read as incandescent, so the only ambient light is a
+/// barely perceptible cool cast to keep it from banding to flat zero.
+fn skyStars(d: vec3f) -> vec3f {
   let axis = clamp(d.z * 0.5 + 0.5, 0.0, 1.0);
   var col = mix(vec3f(0.0016, 0.0022, 0.0038), vec3f(0.0028, 0.0030, 0.0060), axis);
 
@@ -340,6 +339,112 @@ fn background(d: vec3f) -> vec3f {
   col += starLayer(d, 60.0, 0.030, 4.0e-6, 0.0);
   col += starLayer(d, 150.0, 0.045, 0.8e-6, 31.0);
   return col;
+}
+
+/// A crowded field and a bright galactic band. Lensing only shows where the sky
+/// has structure: a point star is magnified and shifted but still reads as a
+/// dot, while a band of light gets bent into arcs and duplicated inside the
+/// Einstein ring, where the mirrored secondary image of the whole sky sits.
+/// The dense layers are what make the flow of the distortion field visible.
+fn skyGalaxy(d: vec3f) -> vec3f {
+  let axis = clamp(d.z * 0.5 + 0.5, 0.0, 1.0);
+  var col = mix(vec3f(0.003, 0.004, 0.007), vec3f(0.005, 0.005, 0.010), axis);
+
+  // Same band as the film sky at about eight times the brightness, with a
+  // warmer core and bluish arms so its duplicated images are easy to match up.
+  let latitude = dot(d, GALACTIC_POLE);
+  let core = pow(max(dot(d, GALACTIC_CENTER), 0.0), 4.0);
+  let tint = mix(vec3f(0.55, 0.62, 0.85), vec3f(1.0, 0.78, 0.52), core);
+  col += milkyWay(d) * 8.0 * tint;
+  // A narrow, star-dense ridge along the band: the stars crowd toward it.
+  let crowding = exp(-latitude * latitude * 90.0);
+
+  col += starLayer(d, 60.0, 0.06, 7.0e-6, 0.0);
+  col += starLayer(d, 150.0, 0.10, 1.6e-6, 31.0);
+  col += starLayer(d, 320.0, 0.05 + 0.35 * crowding, 0.35e-6, 57.0);
+  return col;
+}
+
+/// Angular spacing of the grid and checker cells, 10 degrees. The whole default
+/// view sits inside a strongly magnified patch of sky — the Einstein radius is
+/// ~18 degrees from r = 40 — so coarser cells leave only a few lines on screen.
+const SKY_CELL: f32 = 0.17453293;
+
+/// Longitude of the point directly behind the hole from the default camera
+/// (azimuth 0.6 in camera.ts, plus pi). The grid and checker are measured from
+/// here, so at the default view their quadrant corner sits behind the shadow —
+/// the setup of Bohn et al. 2015 — and all four colors meet at the lens. The sky
+/// is still fixed to the world, so orbiting sweeps it past as it should.
+const SKY_ORIGIN: f32 = 3.7415927;
+
+/// Longitude from SKY_ORIGIN in (-pi, pi], and latitude about the spin axis.
+fn skyCoordinates(d: vec3f) -> vec2f {
+  let latitude = asin(clamp(d.z, -1.0, 1.0));
+  var longitude = atan2(d.y, d.x) - SKY_ORIGIN;
+  longitude -= 6.2831853 * round(longitude / 6.2831853);
+  return vec2f(longitude, latitude);
+}
+
+/// Distance, in radians on the sky, to the nearest line of the grid.
+fn gridDistance(c: vec2f) -> f32 {
+  let dLon = abs(c.x - round(c.x / SKY_CELL) * SKY_CELL) * cos(c.y);
+  let dLat = abs(c.y - round(c.y / SKY_CELL) * SKY_CELL);
+  return min(dLat, dLon);
+}
+
+/// Coverage of a line at angular distance `dist`, antialiased at the camera's
+/// pixel scale. Lensing compresses the sky near the shadow far past that scale,
+/// so lines there alias on any single sample; the jittered accumulation
+/// averages them out.
+fn lineCoverage(dist: f32, pixels: f32) -> f32 {
+  let t = dist / max(U.view.w * pixels, 3e-4);
+  return exp(-t * t);
+}
+
+/// One hue per quadrant: either side of the point behind the hole, north and
+/// south of the equator. Each patch of sky has one color, so its lensed copies
+/// can be matched to it — the secondary image inside the Einstein ring comes
+/// out mirrored, with the colors swapped across the shadow.
+fn quadrantColor(c: vec2f) -> vec3f {
+  let east = c.x >= 0.0;
+  if (c.y >= 0.0) {
+    return select(vec3f(1.0, 0.32, 0.22), vec3f(0.25, 0.55, 1.0), east);
+  }
+  return select(vec3f(0.30, 0.85, 0.40), vec3f(1.0, 0.82, 0.25), east);
+}
+
+/// A latitude-longitude grid. The textbook way to see the lens map: straight
+/// lines turn into curves, the Einstein ring shows up as the circle where the
+/// grid folds over, and the whole sky repeats inside it. The equator and the
+/// meridian through the point behind the hole are drawn in white.
+fn skyGrid(d: vec3f) -> vec3f {
+  let c = skyCoordinates(d);
+  let axes = min(abs(c.y), abs(c.x) * cos(c.y));
+  return vec3f(0.004, 0.005, 0.008)
+    + quadrantColor(c) * (0.2 * lineCoverage(gridDistance(c), 0.8))
+    + vec3f(0.35) * lineCoverage(axes, 1.2);
+}
+
+/// Quadrant-colored checkerboard, the convention of Bohn et al. 2015 and
+/// Riazuelo's renders: alternating cells for scale, one hue per quadrant.
+/// Every lensed image of every cell is identifiable by color and orientation.
+fn skyChecker(d: vec3f) -> vec3f {
+  let c = skyCoordinates(d);
+  let cell = vec2i(floor(c / SKY_CELL));
+  let parity = f32((cell.x + cell.y) & 1);
+  return quadrantColor(c) * mix(0.03, 0.16, parity);
+}
+
+/// Deterministic — required for the accumulation to converge. The per-sample
+/// jitter is what antialiases the stars and grid lines, so this is where
+/// progressive refinement is most visible.
+fn background(d: vec3f) -> vec3f {
+  switch u32(U.sky.x) {
+    case 1u: { return skyGalaxy(d); }
+    case 2u: { return skyGrid(d); }
+    case 3u: { return skyChecker(d); }
+    default: { return skyStars(d); }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -570,8 +675,22 @@ struct SlabHit {
 
 /// Half-thickness at radius r. Proportional to r, which is roughly what a real
 /// accretion disk does — it flares outward rather than staying a constant slab.
+///
+/// It tapers to zero at both rims and is zero outside them. U.band.w * r alone
+/// is an infinite cone, not a disk, and the default camera (elevation ~3 degrees)
+/// sits inside that cone once the thickness passes ~5%. A ray that starts or
+/// wanders inside the slab never sees a surface entry, so it could only find the
+/// disk at the midplane: the near side of the disk vanished down to a hairline
+/// and the shadow showed straight through it. Untapered rims would also be
+/// visible as walls, and both are shaded dark — the emission goes to zero at
+/// the ISCO and is faded out at the outer edge — so they would read as black
+/// lips around the shadow and a black band along the outer edge.
 fn diskHalfThickness(r: f32) -> f32 {
-  return U.band.w * r;
+  let rIsco = U.params.z;
+  let rOuter = U.params.y;
+  let taper =
+    smoothstep(rIsco, rIsco * 1.5, r) * (1.0 - smoothstep(rOuter * 0.8, rOuter, r));
+  return U.band.w * r * sqrt(taper);
 }
 
 /// First entry into the disk slab over one integration step.
@@ -589,6 +708,10 @@ fn diskHalfThickness(r: f32) -> f32 {
 ///
 /// Thickness zero is still supported and reduces exactly to the old midplane
 /// crossing, so the control can be taken to zero and this behaves as before.
+///
+/// Only a ray that starts the step outside the slab can hit it. A camera moved
+/// inside the disk itself looks out through the gas rather than seeing nothing
+/// but a midplane hit at point-blank range.
 fn slabEntry(xPrev: vec3f, rPrev: f32, xNext: vec3f, rNext: f32) -> SlabHit {
   var out: SlabHit;
   out.hit = false;
@@ -597,7 +720,10 @@ fn slabEntry(xPrev: vec3f, rPrev: f32, xNext: vec3f, rNext: f32) -> SlabHit {
   let sPrev = abs(xPrev.z) - diskHalfThickness(rPrev);
   let sNext = abs(xNext.z) - diskHalfThickness(rNext);
 
-  if (sPrev > 0.0 && sNext <= 0.0) {
+  if (sPrev <= 0.0) {
+    return out;
+  }
+  if (sNext <= 0.0) {
     out.hit = true;
     out.t = sPrev / max(sPrev - sNext, 1e-8);
   } else if (xPrev.z * xNext.z < 0.0) {
@@ -607,6 +733,29 @@ fn slabEntry(xPrev: vec3f, rPrev: f32, xNext: vec3f, rNext: f32) -> SlabHit {
     out.t = xPrev.z / (xPrev.z - xNext.z);
   }
   return out;
+}
+
+/// The slab counterpart of planeLimitedStep: shorten a step so it lands just
+/// short of the slab surface rather than somewhere past it.
+///
+/// Without it a thick disk's edge showed the same regular sawtooth the plane
+/// limiter was written to remove. The entry point is interpolated linearly
+/// across the step, and a ray grazing the surface covers a long step with its
+/// signed distance barely changing, so where the step boundaries happen to fall
+/// decides where the edge is drawn. The approach speed bounds how fast |z| - H
+/// can fall: |dz| plus the flare slope times |dr|. The taper is left out, which
+/// only makes the bound looser where the disk is thinning anyway.
+fn surfaceLimitedStep(base: f32, x: vec3f, r: f32, dx: vec3f) -> f32 {
+  let above = abs(x.z) - diskHalfThickness(r);
+  if (above <= 0.0) {
+    return base;
+  }
+  let dr = abs(dot(x, dx)) / max(length(x), 1e-4);
+  let speed = abs(dx.z) + U.band.w * dr;
+  if (speed < 1e-6) {
+    return base;
+  }
+  return min(base, max(above / speed * KERR_PLANE_APPROACH, KERR_PLANE_STEP_MIN));
 }
 
 // ---------------------------------------------------------------------------
@@ -666,6 +815,7 @@ fn traceRadiance(origin: vec3f, direction: vec3f) -> vec3f {
     var h = adaptiveStep(r);
     if (diskEnabled) {
       h = planeLimitedStep(h, st.x.z, deriv.dx.z);
+      h = surfaceLimitedStep(h, st.x, r, deriv.dx);
     }
 
     let previous = st;

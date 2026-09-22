@@ -24,6 +24,8 @@ or **Controls** in the panel footer) for the full list.
 Sliders control spin, disk outer radius, disk thickness, render resolution,
 exposure and glow, and a **Shading** switch chooses between the stylized
 Cinematic disk and a Physical one (see [Physical shading](#physical-shading)).
+A **Background** switch picks the sky the escaped rays land on (see
+[Backgrounds](#backgrounds)).
 The control panel can be dragged, resized and collapsed — see
 [The panel](#the-panel).
 
@@ -314,8 +316,26 @@ light at any resolution instead of sparkling when the trace goes coarse.
 The splat stays that small on purpose. From 40 M the Einstein radius is about
 18°, so the whole field of view is strongly lensed, and the shear stretches
 anything with a width on the sky into a tangential arc — correct for an extended
-source, wrong for a star. A faint procedural Milky Way sits under them, and its
+source, wrong for a star. A procedural Milky Way sits under them, and its
 lensed image around the shadow is real.
+
+### Backgrounds
+
+Lensing is a map from the sky to the screen, and it only shows where the sky
+has structure. A sparse field of point stars hides most of that map: a star is
+shifted and brightened but still reads as a dot. So the sky is selectable:
+
+- **Galaxy** (the default) — a crowded star field and a bright Milky Way. The
+  band bends into arcs and reappears, mirrored, just outside the shadow.
+- **Stars** — the dark, sparse film sky, where the disk carries the picture.
+- **Grid** — latitude and longitude lines about the spin axis, every 10°.
+- **Checker** — a checkerboard with one color per quadrant, after Bohn et al.
+  (2015).
+
+Grid and Checker are measured from the point directly behind the hole at the
+default camera, so the four quadrants meet behind the shadow and the mirrored
+secondary image of the sky inside the Einstein ring is plain to see. They stay
+fixed to the world, so orbiting sweeps them past.
 
 ### Lensing level of detail
 

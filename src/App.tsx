@@ -11,7 +11,7 @@ import {
   validatePhysicsOnGpu,
   type ValidationReport,
 } from './gpu/validatePhysics.ts';
-import type { Shading } from './gpu/uniforms.ts';
+import type { Background, Shading } from './gpu/uniforms.ts';
 import { Controls } from './ui/Controls.tsx';
 import { HelpPanel } from './ui/HelpPanel.tsx';
 import { attachOrbitControls, isFormControl } from './ui/orbitControls.ts';
@@ -156,6 +156,10 @@ export default function App() {
     setScene((current) => ({ ...current, shading }));
   }, []);
 
+  const handleBackgroundChange = useCallback((background: Background) => {
+    setScene((current) => ({ ...current, background }));
+  }, []);
+
   const showHelp = useCallback(() => setHelpOpen(true), []);
   const hideHelp = useCallback(() => setHelpOpen(false), []);
 
@@ -230,6 +234,7 @@ export default function App() {
         onNumericChange={handleNumericChange}
         onDiskToggle={handleDiskToggle}
         onShadingChange={handleShadingChange}
+        onBackgroundChange={handleBackgroundChange}
         onRestoreDefaults={handleRestoreDefaults}
         onShowHelp={showHelp}
       >

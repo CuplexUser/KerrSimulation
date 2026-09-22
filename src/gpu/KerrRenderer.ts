@@ -42,6 +42,7 @@ import {
   UNIFORM_BYTES,
   UNIFORM_FLOATS,
   packUniforms,
+  type Background,
   type RenderParams,
   type Shading,
 } from './uniforms.ts';
@@ -59,6 +60,8 @@ export type SceneParams = {
   diskThickness: number;
   /** Cinematic is the stylized film look; Physical is Novikov-Thorne + exact g. */
   shading: Shading;
+  /** What escaped rays see. The non-film skies exist to make the lensing legible. */
+  background: Background;
   /** Physical mode: emitted temperature at the peak of the flux profile, K. */
   peakTemperature: number;
 };
@@ -89,6 +92,9 @@ export const DEFAULT_SCENE: SceneParams = {
   // See slabEntry in trace.wgsl.
   diskThickness: 0.0,
   shading: 'cinematic',
+  // A crowded sky rather than the film's sparse one: lensing only shows where
+  // the background has structure to distort. 'stars' is the darker film look.
+  background: 'galaxy',
   // Warm white at the hottest ring. Real stellar-mass disks peak in X-rays;
   // this is scaled to where the color is visible.
   peakTemperature: 7500,
@@ -498,6 +504,7 @@ export class KerrRenderer {
       next.dopplerBeaming !== previous.dopplerBeaming ||
       next.diskThickness !== previous.diskThickness ||
       next.shading !== previous.shading ||
+      next.background !== previous.background ||
       next.peakTemperature !== previous.peakTemperature;
 
     // A slider drag is an interaction like a camera drag: preview it coarse and
@@ -750,6 +757,7 @@ export class KerrRenderer {
       dopplerBeaming: this.#scene.dopplerBeaming,
       diskThickness: this.#scene.diskThickness,
       shading: this.#scene.shading,
+      background: this.#scene.background,
       peakTemperature: this.#scene.peakTemperature,
       fluxPeak: this.#fluxPeak,
       luminanceNorm: this.#luminanceNorm,

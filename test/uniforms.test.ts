@@ -45,6 +45,7 @@ const PARAMS: RenderParams = {
   dopplerBeaming: 0.15,
   diskThickness: 0.02,
   shading: 'physical',
+  background: 'checker',
   peakTemperature: 7500,
   fluxPeak: 0.004,
   luminanceNorm: 0.03125,
@@ -127,6 +128,10 @@ describe('packUniforms slot layout', () => {
     assert.deepEqual(vec4(data, 10), [600, 300, 9, Math.fround((2 * 0.5) / 400)]);
   });
 
+  test('slot 11 — background index', () => {
+    assert.deepEqual(vec4(data, 11), [3, 0, 0, 0]);
+  });
+
   test('the right vector is not confused with the forward vector', () => {
     // Slots 1 and 3 are adjacent and both hold a basis vector, which makes them
     // the easiest pair in the buffer to transpose.
@@ -156,6 +161,15 @@ describe('packUniforms derived values', () => {
   test('shading is encoded as a float flag', () => {
     assert.equal(pack({ params: { ...PARAMS, shading: 'physical' } })[36], 1);
     assert.equal(pack({ params: { ...PARAMS, shading: 'cinematic' } })[36], 0);
+  });
+
+  test('background is encoded by its index in the shader switch', () => {
+    const encode = (background: RenderParams['background']) =>
+      pack({ params: { ...PARAMS, background } })[44];
+    assert.deepEqual(
+      (['stars', 'galaxy', 'grid', 'checker'] as const).map(encode),
+      [0, 1, 2, 3],
+    );
   });
 
   test('a missing flux peak does not produce a non-finite reciprocal', () => {

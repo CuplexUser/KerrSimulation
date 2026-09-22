@@ -33,6 +33,8 @@ struct Uniforms {
   disk: vec4f,
   // presented width, presented height, dither seed, pixel angle
   view: vec4f,
+  // background index, unused, unused, unused
+  sky: vec4f,
 }
 
 @group(0) @binding(0) var source: texture_2d<f32>;

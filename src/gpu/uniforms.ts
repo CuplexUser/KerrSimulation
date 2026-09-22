@@ -8,10 +8,25 @@
 
 import type { CameraBasis } from './camera.ts';
 
-export const UNIFORM_FLOATS = 44;
+export const UNIFORM_FLOATS = 48;
 export const UNIFORM_BYTES = UNIFORM_FLOATS * 4;
 
 export type Shading = 'cinematic' | 'physical';
+
+/**
+ * What the escaped rays land on. Stars is the film look; the others are there
+ * to make the lensing legible. A sparse field of point sources hides most of
+ * the map — the sky has to have structure for its distortion to show.
+ */
+export type Background = 'stars' | 'galaxy' | 'grid' | 'checker';
+
+/** Index the shader switches on. Order is the contract with background() in trace.wgsl. */
+export const BACKGROUND_INDEX: Record<Background, number> = {
+  stars: 0,
+  galaxy: 1,
+  grid: 2,
+  checker: 3,
+};
 
 export type RenderParams = {
   spin: number;
@@ -28,6 +43,7 @@ export type RenderParams = {
   /** Disk half-thickness as a fraction of radius. 0 is a mathematical plane. */
   diskThickness: number;
   shading: Shading;
+  background: Background;
   /** Physical mode: emitted temperature at the flux peak, in kelvin. */
   peakTemperature: number;
   /** Physical mode: peak of the Page-Thorne flux profile at this spin. */
@@ -77,6 +93,7 @@ export type UniformInput = {
  *   bloom    vec4  bloomW, bloomH, threshold, strength
  *   disk     vec4  physical shading flag, peakTemperature, 1/fluxPeak, luminanceNorm
  *   view     vec4  presentW, presentH, ditherSeed, pixel angle (radians)
+ *   sky      vec4  background index, unused, unused, unused
  */
 export function packUniforms(target: Float32Array, input: UniformInput): void {
   const {
@@ -152,4 +169,9 @@ export function packUniforms(target: Float32Array, input: UniformInput): void {
   // Angular size of one traced pixel. Stars are splatted at no less than this,
   // so their brightness does not depend on the trace resolution.
   target[43] = height === 0 ? 0 : (2 * basis.tanHalfFov) / height;
+
+  target[44] = BACKGROUND_INDEX[params.background];
+  target[45] = 0;
+  target[46] = 0;
+  target[47] = 0;
 }

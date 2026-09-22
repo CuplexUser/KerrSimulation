@@ -69,6 +69,7 @@ const SLOT = {
   peakTemperature: 37,
   presentWidth: 40,
   presentHeight: 41,
+  background: 44,
 };
 
 const read = (frame: FrameRecord, slot: keyof typeof SLOT): number =>
@@ -171,6 +172,13 @@ describe('frame structure', () => {
     const frame = gpu.frames.at(-1)!;
     assert.equal(read(frame, 'shading'), 1);
     assert.equal(read(frame, 'peakTemperature'), 9000);
+  });
+
+  test('the background choice reaches the shader', async () => {
+    const { renderer, gpu } = await setup();
+    renderer.setScene({ background: 'grid' });
+    tick(gpu, 1);
+    assert.equal(read(gpu.frames.at(-1)!, 'background'), 2);
   });
 
   test('the dispatch covers its band at one workgroup per 8x8 pixels', async () => {
