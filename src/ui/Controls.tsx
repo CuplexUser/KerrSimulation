@@ -4,6 +4,7 @@ import {
   type RendererStats,
   type SceneParams,
 } from '../gpu/KerrRenderer.ts';
+import type { Shading } from '../gpu/uniforms.ts';
 import { RadialScale } from './RadialScale.tsx';
 import { usePanelLayout } from './usePanelLayout.ts';
 
@@ -14,7 +15,8 @@ type NumericKey =
   | 'exposure'
   | 'bloomStrength'
   | 'dopplerBeaming'
-  | 'diskThickness';
+  | 'diskThickness'
+  | 'peakTemperature';
 
 type Props = {
   scene: SceneParams;
@@ -22,7 +24,9 @@ type Props = {
   cameraRadius: number;
   onNumericChange: (key: NumericKey, value: number) => void;
   onDiskToggle: (enabled: boolean) => void;
+  onShadingChange: (shading: Shading) => void;
   onRestoreDefaults: () => void;
+  onShowHelp: () => void;
   children?: React.ReactNode;
 };
 
@@ -31,6 +35,12 @@ const formatSpin = (v: number): string => v.toFixed(3);
 const formatRadius = (v: number): string => `${v.toFixed(1)} M`;
 const formatPercent = (v: number): string => `${Math.round(v * 100)}%`;
 const formatMultiplier = (v: number): string => `${v.toFixed(2)}×`;
+const formatKelvin = (v: number): string => `${Math.round(v).toLocaleString()} K`;
+
+const SHADING_OPTIONS: { value: Shading; label: string }[] = [
+  { value: 'cinematic', label: 'Cinematic' },
+  { value: 'physical', label: 'Physical' },
+];
 
 type SliderProps = {
   name: NumericKey;
@@ -83,13 +93,37 @@ function Slider({
   );
 }
 
+type SegmentProps = {
+  value: Shading;
+  label: string;
+  active: boolean;
+  onSelect: (value: Shading) => void;
+};
+
+function Segment({ value, label, active, onSelect }: SegmentProps) {
+  const handleClick = useCallback(() => onSelect(value), [onSelect, value]);
+  return (
+    <button
+      type="button"
+      role="radio"
+      aria-checked={active}
+      className={`segmented__option${active ? ' is-active' : ''}`}
+      onClick={handleClick}
+    >
+      {label}
+    </button>
+  );
+}
+
 export function Controls({
   scene,
   stats,
   cameraRadius,
   onNumericChange,
   onDiskToggle,
+  onShadingChange,
   onRestoreDefaults,
+  onShowHelp,
   children,
 }: Props) {
   const handleDiskToggle = useCallback(
@@ -221,6 +255,30 @@ export function Controls({
             </button>
           </div>
 
+          <div className="field">
+            <span className="field__head">
+              <span className="field__label" id="shading-label">
+                Shading
+              </span>
+            </span>
+            <div className="segmented" role="radiogroup" aria-labelledby="shading-label">
+              {SHADING_OPTIONS.map((option) => (
+                <Segment
+                  key={option.value}
+                  value={option.value}
+                  label={option.label}
+                  active={scene.shading === option.value}
+                  onSelect={onShadingChange}
+                />
+              ))}
+            </div>
+            <p className="field__hint">
+              {scene.shading === 'physical'
+                ? 'Novikov-Thorne disk, blackbody color, and the exact redshift: gravity, Doppler and frame dragging in one factor. Nothing is tuned.'
+                : 'The film look: a hand-tuned color ramp with beaming mostly suppressed.'}
+            </p>
+          </div>
+
           <Slider
             name="spin"
             label="Spin a/M"
@@ -254,17 +312,31 @@ export function Controls({
             format={formatPercent}
             onChange={onNumericChange}
           />
-          <Slider
-            name="dopplerBeaming"
-            label="Doppler"
-            hint="How much relativistic beaming to show. Films suppress it — the real asymmetry looks like a bug."
-            min={0}
-            max={1}
-            step={0.01}
-            value={scene.dopplerBeaming}
-            format={formatPercent}
-            onChange={onNumericChange}
-          />
+          {scene.shading === 'physical' ? (
+            <Slider
+              name="peakTemperature"
+              label="Peak temperature"
+              hint="Emitted temperature at the hottest ring. What you see is shifted by g on the way out: bluer and brighter where the disk comes toward you."
+              min={2500}
+              max={20000}
+              step={100}
+              value={scene.peakTemperature}
+              format={formatKelvin}
+              onChange={onNumericChange}
+            />
+          ) : (
+            <Slider
+              name="dopplerBeaming"
+              label="Doppler"
+              hint="How much relativistic beaming to show. Films suppress it — the real asymmetry looks like a bug."
+              min={0}
+              max={1}
+              step={0.01}
+              value={scene.dopplerBeaming}
+              format={formatPercent}
+              onChange={onNumericChange}
+            />
+          )}
           <Slider
             name="resolutionScale"
             label="Resolution"
@@ -322,14 +394,6 @@ export function Controls({
       <footer className="panel__foot">
         <dl className="legend">
           <div>
-            <dt>Orbit</dt>
-            <dd>drag</dd>
-          </div>
-          <div>
-            <dt>Zoom</dt>
-            <dd>scroll</dd>
-          </div>
-          <div>
             <dt>Render</dt>
             <dd>{stats ? `${stats.width}×${stats.height}` : '—'}</dd>
           </div>
@@ -338,6 +402,14 @@ export function Controls({
             <dd>{stats ? `${stats.bandCount}×` : '—'}</dd>
           </div>
         </dl>
+        <button
+          type="button"
+          className="panel__help"
+          onClick={onShowHelp}
+          title="Mouse, touch and keyboard controls (?)"
+        >
+          Controls <kbd>?</kbd>
+        </button>
         {floating ? (
           <button type="button" className="panel__reset" onClick={resetLayout}>
             Reset panel

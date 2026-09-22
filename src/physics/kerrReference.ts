@@ -2,8 +2,13 @@
  * Double-precision reference implementation of the Kerr null-geodesic integrator.
  *
  * This is a faithful mirror of `src/gpu/shaders/kerr_math.wgsl` — same metric,
- * same Hamiltonian, same finite-difference gradient, same RK4 with the same
- * adaptive step rule — evaluated in f64 instead of f32.
+ * same Hamiltonian, same closed-form gradient, same RK4 with the same adaptive
+ * step rule — evaluated in f64 instead of f32.
+ *
+ * It also keeps the central-difference gradient the shader used to run. Pass a
+ * numeric `eps` to any of the integrator entry points to select it; that makes
+ * it an independent oracle for the analytic derivative, since the two share
+ * nothing but the definition of W.
  *
  * It has two consumers:
  *   - `scripts/validate-physics.mts` asserts the invariants under Node.
@@ -40,6 +45,7 @@ export const STEP_SCALE = 0.045;
 export const STEP_MIN = 0.015;
 export const STEP_MAX = 0.9;
 export const ESCAPE_RADIUS = 60;
+/** Central-difference step for the finite-difference oracle only. */
 export const GRAD_EPS = 0.0015;
 export const HORIZON_PAD = 1.02;
 export const PLANE_APPROACH = 0.85;
@@ -102,10 +108,57 @@ export const angularMomentum = (x: Vec3, p: Vec3): number =>
 
 /**
  * Geodesic RHS.
- *   dx/dlambda = dH/dp = p - f * S * k   (exact closed form)
- *   dp/dlambda = -dH/dx                  (central finite differences)
+ *   dx/dlambda = dH/dp = p - f * S * k                        (exact closed form)
+ *   dp/dlambda = -dH/dx = 0.5 S^2 grad f + f S (p . grad k)   (closed form)
+ *
+ * Mirrors geodesicRHS in kerr_math.wgsl, including its grad r from implicitly
+ * differentiating the Kerr-Schild quartic:
+ *   grad r = r / D * (x r^2, y r^2, z (r^2 + a^2)),   D = r^4 + a^2 z^2
+ *
+ * With a numeric `eps` the momentum derivative is instead taken by central
+ * differences of W — the shader's former method, kept as a test oracle.
  */
 export function geodesicRHS(
+  x: Vec3,
+  p: Vec3,
+  a: number,
+  eps?: number,
+): { dx: Vec3; dp: Vec3 } {
+  if (eps !== undefined) return geodesicRHSFiniteDiff(x, p, a, eps);
+
+  const r = kerrRadius(x, a);
+  const a2 = a * a;
+  const r2 = r * r;
+  const q = r2 + a2;
+  const d = r2 * r2 + a2 * x[2] * x[2];
+
+  const f = (2 * r2 * r) / d;
+  const k = v3((r * x[0] + a * x[1]) / q, (r * x[1] - a * x[0]) / q, x[2] / r);
+  const s = 1 + dot(k, p);
+
+  const gradR = mul(v3(x[0] * r2, x[1] * r2, x[2] * q), r / d);
+
+  const d2 = d * d;
+  const gradF = sub(
+    mul(gradR, (6 * r2 * d - 8 * r2 * r2 * r2) / d2),
+    v3(0, 0, (4 * r2 * r * a2 * x[2]) / d2),
+  );
+
+  const throughR =
+    (p[0] * x[0] + p[1] * x[1]) / q -
+    (2 * r * (p[0] * k[0] + p[1] * k[1])) / q -
+    (p[2] * x[2]) / r2;
+  const direct = v3((r * p[0] - a * p[1]) / q, (a * p[0] + r * p[1]) / q, p[2] / r);
+  const pGradK = add(mul(gradR, throughR), direct);
+
+  return {
+    dx: sub(p, mul(k, f * s)),
+    dp: add(mul(gradF, 0.5 * s * s), mul(pGradK, f * s)),
+  };
+}
+
+/** dp/dlambda by central differences of W. The analytic form's oracle. */
+export function geodesicRHSFiniteDiff(
   x: Vec3,
   p: Vec3,
   a: number,
@@ -136,7 +189,7 @@ export function rk4Step(
   p: Vec3,
   a: number,
   h: number,
-  eps: number = GRAD_EPS,
+  eps?: number,
 ): { x: Vec3; p: Vec3 } {
   const k1 = geodesicRHS(x, p, a, eps);
   const k2 = geodesicRHS(
@@ -246,7 +299,7 @@ export function traceRay(
   direction: Vec3,
   a: number,
   maxSteps: number,
-  eps: number = GRAD_EPS,
+  eps?: number,
   sampleEvery = 0,
   stepScale: number = STEP_SCALE,
 ): TraceResult {

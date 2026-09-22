@@ -77,22 +77,8 @@ export function PhysicsCheck({ status, report, error, onRun }: Props) {
               <dt>ISCO, GPU vs CPU</dt>
               <dd>{sci(report.iscoMaxDiff)}</dd>
             </div>
-            <div>
-              <dt>Gradient ε in use</dt>
-              <dd>{report.configuredEps}</dd>
-            </div>
-            <div>
-              <dt>Best ε measured here</dt>
-              <dd>{report.recommendedEps}</dd>
-            </div>
           </dl>
 
-          <p className="physics__note">
-            ε sweep on this GPU:{' '}
-            {report.epsilonSweep
-              .map((s) => `${s.eps}→${sci(s.worstAbsH)}`)
-              .join('  ')}
-          </p>
         </div>
       ) : null}
     </section>

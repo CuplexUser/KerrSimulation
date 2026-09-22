@@ -3,13 +3,15 @@
  *
  * Everything is padded to vec4 so WGSL's uniform-address-space alignment rules
  * cannot bite. This layout is the contract with the `Uniforms` struct declared in
- * both trace.wgsl and present.wgsl — change one, change all three.
+ * trace.wgsl, present.wgsl and bloom.wgsl — change one, change them all.
  */
 
 import type { CameraBasis } from './camera.ts';
 
-export const UNIFORM_FLOATS = 36;
+export const UNIFORM_FLOATS = 44;
 export const UNIFORM_BYTES = UNIFORM_FLOATS * 4;
+
+export type Shading = 'cinematic' | 'physical';
 
 export type RenderParams = {
   spin: number;
@@ -25,6 +27,13 @@ export type RenderParams = {
   dopplerBeaming: number;
   /** Disk half-thickness as a fraction of radius. 0 is a mathematical plane. */
   diskThickness: number;
+  shading: Shading;
+  /** Physical mode: emitted temperature at the flux peak, in kelvin. */
+  peakTemperature: number;
+  /** Physical mode: peak of the Page-Thorne flux profile at this spin. */
+  fluxPeak: number;
+  /** Physical mode: 1 / luminance of a blackbody at the peak temperature. */
+  luminanceNorm: number;
 };
 
 export type UniformInput = {
@@ -40,23 +49,34 @@ export type UniformInput = {
   /** Row range this dispatch covers. One sample is spread over several bands. */
   bandOffset: number;
   bandHeight: number;
-  /** Size of the bloom chain textures. */
+  /** Size of the first bloom level. */
   bloomWidth: number;
   bloomHeight: number;
+  /**
+   * Region of the accumulation texture holding the image on screen. It can
+   * differ from the traced size: the last complete (possibly coarse) image
+   * stays on screen while a new pass is in flight.
+   */
+  presentWidth: number;
+  presentHeight: number;
+  /** Changes every presented frame, so the output dither does not freeze. */
+  ditherSeed: number;
 };
 
 /**
  * Writes into the caller's scratch array so the render loop allocates nothing.
  *
- *   camPos   vec4  xyz eye        w unused
+ *   camPos   vec4  xyz eye        w lens shift x
  *   camRight vec4  xyz            w tanHalfFov
  *   camUp    vec4  xyz            w aspect
- *   camFwd   vec4  xyz            w unused
+ *   camFwd   vec4  xyz            w lens shift y
  *   params   vec4  spin, rOuter, rIsco, rPlus
  *   frame    vec4  frameIndex, traceResX, traceResY, exposure
  *   options  vec4  diskEnabled, maxSteps, canvasW, canvasH
  *   band     vec4  bandOffset, bandHeight, dopplerBeaming, diskThickness
  *   bloom    vec4  bloomW, bloomH, threshold, strength
+ *   disk     vec4  physical shading flag, peakTemperature, 1/fluxPeak, luminanceNorm
+ *   view     vec4  presentW, presentH, ditherSeed, pixel angle (radians)
  */
 export function packUniforms(target: Float32Array, input: UniformInput): void {
   const {
@@ -71,12 +91,15 @@ export function packUniforms(target: Float32Array, input: UniformInput): void {
     bandHeight,
     bloomWidth,
     bloomHeight,
+    presentWidth,
+    presentHeight,
+    ditherSeed,
   } = input;
 
   target[0] = basis.eye[0];
   target[1] = basis.eye[1];
   target[2] = basis.eye[2];
-  target[3] = 0;
+  target[3] = basis.shift[0];
 
   target[4] = basis.right[0];
   target[5] = basis.right[1];
@@ -91,7 +114,7 @@ export function packUniforms(target: Float32Array, input: UniformInput): void {
   target[12] = basis.forward[0];
   target[13] = basis.forward[1];
   target[14] = basis.forward[2];
-  target[15] = 0;
+  target[15] = basis.shift[1];
 
   target[16] = params.spin;
   target[17] = params.diskOuterRadius;
@@ -117,4 +140,16 @@ export function packUniforms(target: Float32Array, input: UniformInput): void {
   target[33] = bloomHeight;
   target[34] = params.bloomThreshold;
   target[35] = params.bloomStrength;
+
+  target[36] = params.shading === 'physical' ? 1 : 0;
+  target[37] = params.peakTemperature;
+  target[38] = params.fluxPeak > 0 ? 1 / params.fluxPeak : 0;
+  target[39] = params.luminanceNorm;
+
+  target[40] = presentWidth;
+  target[41] = presentHeight;
+  target[42] = ditherSeed;
+  // Angular size of one traced pixel. Stars are splatted at no less than this,
+  // so their brightness does not depend on the trace resolution.
+  target[43] = height === 0 ? 0 : (2 * basis.tanHalfFov) / height;
 }

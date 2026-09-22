@@ -11,8 +11,10 @@ import {
   validatePhysicsOnGpu,
   type ValidationReport,
 } from './gpu/validatePhysics.ts';
+import type { Shading } from './gpu/uniforms.ts';
 import { Controls } from './ui/Controls.tsx';
-import { attachOrbitControls } from './ui/orbitControls.ts';
+import { HelpPanel } from './ui/HelpPanel.tsx';
+import { attachOrbitControls, isFormControl } from './ui/orbitControls.ts';
 import { PhysicsCheck } from './ui/PhysicsCheck.tsx';
 import { Unsupported } from './ui/Unsupported.tsx';
 
@@ -28,7 +30,8 @@ type NumericKey =
   | 'exposure'
   | 'bloomStrength'
   | 'dopplerBeaming'
-  | 'diskThickness';
+  | 'diskThickness'
+  | 'peakTemperature';
 
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -38,6 +41,7 @@ export default function App() {
   const [scene, setScene] = useState<SceneParams>(DEFAULT_SCENE);
   const [stats, setStats] = useState<RendererStats | null>(null);
   const [cameraRadius, setCameraRadius] = useState(DEFAULT_CAMERA.radius);
+  const [helpOpen, setHelpOpen] = useState(false);
 
   const [checkStatus, setCheckStatus] = useState<'idle' | 'running' | 'done'>(
     'idle',
@@ -148,12 +152,38 @@ export default function App() {
     setScene((current) => ({ ...current, diskEnabled }));
   }, []);
 
+  const handleShadingChange = useCallback((shading: Shading) => {
+    setScene((current) => ({ ...current, shading }));
+  }, []);
+
+  const showHelp = useCallback(() => setHelpOpen(true), []);
+  const hideHelp = useCallback(() => setHelpOpen(false), []);
+
+  // ? and H toggle the controls reference, Escape closes it. The camera keys
+  // are handled by orbitControls; these are the only app-level shortcuts.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
+      if (isFormControl(event.target)) return;
+
+      if (event.key === '?' || event.key === 'h' || event.key === 'H') {
+        event.preventDefault();
+        setHelpOpen((open) => !open);
+      } else if (event.key === 'Escape') {
+        setHelpOpen(false);
+      }
+    };
+    globalThis.addEventListener('keydown', onKeyDown);
+    return () => globalThis.removeEventListener('keydown', onKeyDown);
+  }, []);
+
   // Scene and camera together — "defaults" means the view you started with, and
   // restoring the sliders while leaving the camera somewhere else would only be
   // half the job. updateCamera also resets the accumulation, which is required
   // anyway since the image is no longer valid for the new parameters.
   const handleRestoreDefaults = useCallback(() => {
     setScene(DEFAULT_SCENE);
+    rendererRef.current?.setCameraVelocity(0, 0);
     rendererRef.current?.updateCamera((camera) => {
       Object.assign(camera, DEFAULT_CAMERA);
     });
@@ -199,7 +229,9 @@ export default function App() {
         cameraRadius={cameraRadius}
         onNumericChange={handleNumericChange}
         onDiskToggle={handleDiskToggle}
+        onShadingChange={handleShadingChange}
         onRestoreDefaults={handleRestoreDefaults}
+        onShowHelp={showHelp}
       >
         <PhysicsCheck
           status={checkStatus}
@@ -208,6 +240,16 @@ export default function App() {
           onRun={handleRunCheck}
         />
       </Controls>
+      <button
+        type="button"
+        className="stage__help"
+        onClick={showHelp}
+        aria-label="Show controls"
+        title="Controls (?)"
+      >
+        ?
+      </button>
+      {helpOpen ? <HelpPanel onClose={hideHelp} /> : null}
     </main>
   );
 }

@@ -126,7 +126,7 @@ for (const [a, origin] of [
 // 3. Conservation along traced geodesics
 // ---------------------------------------------------------------------------
 
-heading('3. Conservation along traced geodesics (eps = 0.0015, RK4)');
+heading('3. Conservation along traced geodesics (analytic gradient, RK4)');
 
 const traced = REFERENCE_RAYS.map((ray) => ({
   ray,
@@ -135,7 +135,6 @@ const traced = REFERENCE_RAYS.map((ray) => ({
     ray.direction,
     ray.a,
     REFERENCE_MAX_STEPS,
-    GRAD_EPS,
   ),
 }));
 
@@ -170,34 +169,62 @@ for (const { ray, result } of traced) {
 }
 
 // ---------------------------------------------------------------------------
-// 4. Finite-difference epsilon sweep
+// 4. Analytic gradient against the finite-difference oracle
 // ---------------------------------------------------------------------------
 
-heading('4. Epsilon sweep — confirms residual is FD truncation, not a sign error');
+heading('4. Analytic dp/dlambda vs central differences of W');
 
 console.log(
-  '  A sign error in dp/dlambda would not shrink as eps -> 0. Truncation error does (O(eps^2)).',
+  '  The two share nothing but the definition of W, so agreement to FD truncation is the check.',
 );
-console.log(`\n  ${'eps'.padStart(10)} ${'max|H|'.padStart(12)} ${'max dL/L'.padStart(12)}`);
-const sweepRay = { a: 0.9, origin: v3(30, 8, 0), direction: v3(-1, 0, 0) };
-const sweep: { eps: number; h: number; l: number }[] = [];
+console.log(
+  '  A sign error would not shrink as eps -> 0. Truncation error does (O(eps^2)).',
+);
+console.log(`\n  ${'eps'.padStart(10)} ${'worst rel diff'.padStart(15)}`);
+
+/** Deterministic spread of points and directions outside the horizon. */
+const gradientProbes: { x: Vec3; d: Vec3; a: number }[] = [];
+for (const a of [0, 0.5, 0.9, 0.998]) {
+  for (let i = 0; i < 64; i++) {
+    const t = i * 0.618034;
+    const radius = 3 + (i % 8) * 3;
+    const theta = Math.acos(1 - 2 * ((i * 0.381966) % 1));
+    const x = v3(
+      radius * Math.sin(theta) * Math.cos(t * 7),
+      radius * Math.sin(theta) * Math.sin(t * 7),
+      radius * Math.cos(theta),
+    );
+    const d = normalize(v3(Math.cos(t * 3), Math.sin(t * 5), Math.cos(t * 11)));
+    gradientProbes.push({ x, d, a });
+  }
+}
+
+const worstGradientDiff = (eps: number): number => {
+  let worst = 0;
+  for (const { x, d, a } of gradientProbes) {
+    const p = nullMomentum(x, d, a);
+    const analytic = geodesicRHS(x, p, a).dp;
+    const numeric = geodesicRHS(x, p, a, eps).dp;
+    worst = Math.max(worst, length(sub(analytic, numeric)) / Math.max(length(numeric), 1e-12));
+  }
+  return worst;
+};
+
+const sweep: { eps: number; diff: number }[] = [];
 for (const eps of [0.01, GRAD_EPS, 1e-4, 1e-5]) {
-  const t = traceRay(
-    sweepRay.origin,
-    sweepRay.direction,
-    sweepRay.a,
-    REFERENCE_MAX_STEPS,
-    eps,
-  );
-  sweep.push({ eps, h: t.maxAbsH, l: t.maxRelL });
-  console.log(
-    `  ${sci(eps, 0).padStart(10)} ${sci(t.maxAbsH, 3).padStart(12)} ${sci(t.maxRelL, 3).padStart(12)}`,
-  );
+  const diff = worstGradientDiff(eps);
+  sweep.push({ eps, diff });
+  console.log(`  ${sci(eps, 0).padStart(10)} ${sci(diff, 3).padStart(15)}`);
 }
 check(
-  '\n  max|H| shrinks as eps decreases',
-  sweep[2].h < sweep[0].h,
-  `eps=1e-2 -> ${sci(sweep[0].h)},  eps=1e-4 -> ${sci(sweep[2].h)}`,
+  '\n  FD converges on the analytic gradient',
+  sweep[2].diff < sweep[0].diff * 1e-2,
+  `eps=1e-2 -> ${sci(sweep[0].diff)},  eps=1e-4 -> ${sci(sweep[2].diff)}`,
+);
+check(
+  'analytic gradient agrees with FD at eps = 1e-5',
+  sweep[3].diff < 1e-6,
+  `worst relative difference ${sci(sweep[3].diff)}`,
 );
 
 // ---------------------------------------------------------------------------
@@ -215,7 +242,7 @@ console.log(
 console.log(`\n  ${'step scale'.padStart(11)} ${'steps'.padStart(6)} ${'max|H|'.padStart(12)}`);
 const plunge: { scale: number; h: number }[] = [];
 for (const scale of [STEP_SCALE, STEP_SCALE / 2, STEP_SCALE / 4, STEP_SCALE / 8]) {
-  const t = traceRay(v3(30, 4, 0), v3(-1, 0, 0), 0, 200_000, GRAD_EPS, 0, scale);
+  const t = traceRay(v3(30, 4, 0), v3(-1, 0, 0), 0, 200_000, undefined, 0, scale);
   plunge.push({ scale, h: t.maxAbsH });
   console.log(
     `  ${fix(scale, 6).padStart(11)} ${String(t.steps).padStart(6)} ${sci(t.maxAbsH, 3).padStart(12)}`,
@@ -247,7 +274,7 @@ console.log(
 console.log('  co-rotating photon harder to swallow, not easier.\n');
 
 const traceImpact = (a: number, impact: number): TraceResult =>
-  traceRay(v3(40, impact, 0), v3(-1, 0, 0), a, REFERENCE_MAX_STEPS, GRAD_EPS);
+  traceRay(v3(40, impact, 0), v3(-1, 0, 0), a, REFERENCE_MAX_STEPS);
 
 /** Asymmetry in closest approach between +b and -b; zero iff the metric is non-rotating. */
 const deflectionAsymmetry = (a: number, b: number): number =>
@@ -312,7 +339,7 @@ const detailed = traceRay(
   v3(-1, 0, 0),
   0.9,
   REFERENCE_MAX_STEPS,
-  GRAD_EPS,
+  undefined,
   40,
 );
 console.log(

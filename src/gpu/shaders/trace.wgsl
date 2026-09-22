@@ -1,20 +1,32 @@
 // Progressive path-traced Kerr black hole.
 //
 // Concatenated after kerr_math.wgsl. One jittered sample per pixel per dispatch,
-// blended into the running average held in a double-buffered rgba16float texture.
+// blended into the running average held in a double-buffered rgba32float texture.
 //
 // The accumulation is double-buffered rather than read-write because baseline
-// WebGPU only permits read_write storage-texture access on r32float/r32uint/r32sint;
-// rgba16float read-write sits behind the rw-storage-texture-tier-2 extension.
+// WebGPU only permits read_write storage-texture access on r32float/r32uint/r32sint.
+//
+// It is f32 rather than f16 on purpose. The blend is mix(prev, sample, 1/n), and
+// once n reaches a few hundred the increment falls below half an f16 ulp and is
+// rounded away: high-variance pixels (the photon ring, stars) stop converging and
+// keep whatever noise they had. f32 has headroom far past the sample cap.
+//
+// Time orientation. Rays are launched future-directed *away* from the camera,
+// which is the time reverse of the light that actually arrives. Time reversal
+// maps Kerr with spin a to Kerr with spin -a, so the geodesics are integrated
+// with traceSpin = -a. That is what puts the flattened edge of the shadow on the
+// approaching side of the disk, as it is for real light. The photon's physical
+// angular momentum is then minus the traced one. Everything about the disk
+// itself — ISCO, orbital velocity, redshift — uses the physical +a.
 
 struct Uniforms {
-  // xyz = eye position, w unused
+  // xyz = eye position, w = lens shift x (pan)
   camPos: vec4f,
   // xyz = right basis vector, w = tan(fov/2)
   camRight: vec4f,
   // xyz = up basis vector, w = aspect ratio
   camUp: vec4f,
-  // xyz = forward basis vector, w unused
+  // xyz = forward basis vector, w = lens shift y (pan)
   camFwd: vec4f,
   // spin a, disk outer radius, r_isco, r_plus
   params: vec4f,
@@ -22,17 +34,21 @@ struct Uniforms {
   frame: vec4f,
   // disk enabled, max integration steps, canvas width, canvas height
   options: vec4f,
-  // row offset and row count for this dispatch, unused, unused
+  // row offset and row count for this dispatch, Doppler beaming, disk thickness
   band: vec4f,
   // bloom width, bloom height, threshold, strength
   bloom: vec4f,
+  // physical shading flag, peak temperature (K), 1 / peak flux, luminance norm
+  disk: vec4f,
+  // presented width, presented height, dither seed, pixel angle (radians)
+  view: vec4f,
 }
 
 @group(0) @binding(0) var<uniform> U: Uniforms;
 @group(0) @binding(1) var prevAccum: texture_2d<f32>;
-@group(0) @binding(2) var nextAccum: texture_storage_2d<rgba16float, write>;
+@group(0) @binding(2) var nextAccum: texture_storage_2d<rgba32float, write>;
 
-// R2 / Roberts low-discrepancy sequence: the 2D generalisation of the golden ratio.
+// R2 / Roberts low-discrepancy sequence: the 2D generalization of the golden ratio.
 // g is the plastic number, the real root of x^3 = x + 1.
 const R2_A1: f32 = 0.7548776662466927;
 const R2_A2: f32 = 0.5698402909980532;
@@ -99,10 +115,10 @@ fn hash2(p: vec2u) -> vec2f {
   return vec2f(v) * (1.0 / 4294967296.0);
 }
 
-fn hash1(p: vec3f) -> f32 {
-  let q = fract(p * 0.1031);
-  let s = q + dot(q, q.yzx + 33.33);
-  return fract((s.x + s.y) * s.z);
+fn hash3(p: vec3f) -> vec3f {
+  var q = fract(p * vec3f(0.1031, 0.1030, 0.0973));
+  q += dot(q, q.yxz + 33.33);
+  return fract((q.xxy + q.yxx) * q.zyx);
 }
 
 /// Sub-pixel offset for this sample.
@@ -124,82 +140,210 @@ fn sampleOffset(pixel: vec2u, frameIndex: u32) -> vec2f {
 }
 
 // ---------------------------------------------------------------------------
+// Color science
+// ---------------------------------------------------------------------------
+
+/// CIE XYZ to linear sRGB (D65). Mirrors xyzToLinearSrgb in diskReference.ts.
+fn xyzToLinearSrgb(c: vec3f) -> vec3f {
+  return vec3f(
+    3.2404542 * c.x - 1.5371385 * c.y - 0.4985314 * c.z,
+    -0.9692660 * c.x + 1.8760108 * c.y + 0.0415560 * c.z,
+    0.0556434 * c.x - 0.2040259 * c.y + 1.0572252 * c.z,
+  );
+}
+
+/// Piecewise Gaussian lobe of the CIE fit below.
+fn lobe(x: f32, mu: f32, below: f32, above: f32) -> f32 {
+  let t = (x - mu) / select(above, below, x < mu);
+  return exp(-0.5 * t * t);
+}
+
+/// Number of wavelength samples across 380-780 nm. Mirrors BLACKBODY_SAMPLES.
+const BLACKBODY_SAMPLES: i32 = 20;
+
+/// CIE XYZ of a blackbody at temperature T, by midpoint integration of Planck's
+/// law against the Wyman-Sloan-Shirley fit of the CIE 1931 matching functions.
+/// Mirrors blackbodyXYZ in diskReference.ts, which is where the renderer gets
+/// the normalization that puts the peak temperature at unit luminance.
+///
+/// Twenty wavelengths is a lot of exps per sample, but it runs once per disk
+/// hit — nothing next to the geodesic that found the hit.
+fn blackbodyXYZ(temperature: f32) -> vec3f {
+  let t = max(temperature, 500.0);
+  let step = 400.0 / f32(BLACKBODY_SAMPLES);
+  var total = vec3f(0.0);
+  for (var i = 0; i < BLACKBODY_SAMPLES; i++) {
+    let lambda = 380.0 + (f32(i) + 0.5) * step;
+    let micrometers = lambda * 1e-3;
+    let m2 = micrometers * micrometers;
+    let planck = 1.0 / (m2 * m2 * micrometers * (exp(1.4388e7 / (lambda * t)) - 1.0));
+    let matching = vec3f(
+      1.056 * lobe(lambda, 599.8, 37.9, 31.0)
+        + 0.362 * lobe(lambda, 442.0, 16.0, 26.7)
+        - 0.065 * lobe(lambda, 501.1, 20.4, 26.2),
+      0.821 * lobe(lambda, 568.8, 46.9, 40.5) + 0.286 * lobe(lambda, 530.9, 16.3, 31.1),
+      1.217 * lobe(lambda, 437.0, 11.8, 36.0) + 0.681 * lobe(lambda, 459.0, 26.0, 13.8),
+    );
+    total += matching * planck;
+  }
+  return total * step;
+}
+
+/// Chromaticity of a blackbody at temperature T, as linear sRGB with unit
+/// luminance. Kim et al. (2002) cubic fit to the Planckian locus in CIE xy,
+/// valid 1667-25000 K. Cheap enough to evaluate per star, where the full
+/// spectral integral would be wasted.
+fn planckianRgb(temperature: f32) -> vec3f {
+  let t = clamp(temperature, 1667.0, 25000.0);
+  let it = 1.0 / t;
+  let it2 = it * it;
+  let it3 = it2 * it;
+  var x: f32;
+  if (t < 4000.0) {
+    x = -0.2661239e9 * it3 - 0.2343589e6 * it2 + 0.8776956e3 * it + 0.179910;
+  } else {
+    x = -3.0258469e9 * it3 + 2.1070379e6 * it2 + 0.2226347e3 * it + 0.240390;
+  }
+  let x2 = x * x;
+  let x3 = x2 * x;
+  var y: f32;
+  if (t < 2222.0) {
+    y = -1.1063814 * x3 - 1.34811020 * x2 + 2.18555832 * x - 0.20219683;
+  } else if (t < 4000.0) {
+    y = -0.9549476 * x3 - 1.37418593 * x2 + 2.09137015 * x - 0.16748867;
+  } else {
+    y = 3.0817580 * x3 - 5.87338670 * x2 + 3.75112997 * x - 0.37001483;
+  }
+  return max(xyzToLinearSrgb(vec3f(x / y, 1.0, (1.0 - x - y) / y)), vec3f(0.0));
+}
+
+// ---------------------------------------------------------------------------
 // Background
 // ---------------------------------------------------------------------------
 
-/// Cube-face parameterisation: (u, v, face). Avoids the pole clustering that a
-/// naive spherical parameterisation would give the starfield.
-fn cubeFace(d: vec3f) -> vec3f {
-  let ad = abs(d);
-  if (ad.x >= ad.y && ad.x >= ad.z) {
-    return vec3f(d.yz / ad.x, select(1.0, 0.0, d.x > 0.0));
-  }
-  if (ad.y >= ad.z) {
-    return vec3f(d.xz / ad.y, select(3.0, 2.0, d.y > 0.0));
-  }
-  return vec3f(d.xy / ad.z, select(5.0, 4.0, d.z > 0.0));
-}
+/// Star splat width in traced pixels, measured on the sky. See starLayer.
+const STAR_PIXEL_SIGMA: f32 = 0.25;
 
-/// One layer of stars on a jittered grid. The 3x3 neighborhood is walked so
-/// stars near a cell boundary are not clipped in half.
-fn starLayer(fuv: vec3f, density: f32, sparsity: f32, seed: f32) -> f32 {
-  let g = fuv.xy * density;
-  let base = floor(g);
-  var total = 0.0;
+/// One layer of stars, seeded on a 3D lattice around the celestial sphere.
+///
+/// Stars used to be hashed on the six faces of a cube, and the neighbor walk
+/// never crossed a face edge, so stars were clipped in half along the seams. A
+/// 3D lattice has no seams: each cell near the sphere owns at most one star,
+/// projected onto the sphere, and the eight cells around the sample point are
+/// the only ones close enough to matter.
+///
+/// Stars are point sources, splatted as a Gaussian scaled to the traced pixel
+/// and normalized over solid angle to a fixed flux. A star then carries the same
+/// total light at any trace resolution, instead of shrinking far below a pixel
+/// and sparkling while the camera moves and the trace goes coarse.
+///
+/// The width is measured on the sky, at the camera's pixel scale, so it is kept
+/// to a quarter of a pixel. From this close the whole view is strongly lensed — the
+/// Einstein radius is ~18 degrees at r = 40 — and the shear stretches a sky-
+/// space splat tangentially by 2-3x. A wider splat turns every star into a short
+/// arc, which is what an extended source really does but not what a star does.
+fn starLayer(d: vec3f, density: f32, presence: f32, fluxScale: f32, seed: f32) -> vec3f {
+  let p = d * density;
+  let base = floor(p - 0.5);
+  let sigma = max(U.view.w * STAR_PIXEL_SIGMA, 1e-5);
+  let inv2s2 = 1.0 / (2.0 * sigma * sigma);
+  let norm = 1.0 / (6.2831853 * sigma * sigma);
+  var total = vec3f(0.0);
 
-  for (var dy = -1; dy <= 1; dy++) {
-    for (var dx = -1; dx <= 1; dx++) {
-      let cell = base + vec2f(f32(dx), f32(dy));
-      let key = vec3f(cell, fuv.z * 17.0 + seed);
-
-      let presence = hash1(key);
-      if (presence > sparsity) {
-        continue;
-      }
-
-      let jitter = vec2f(hash1(key + 1.7), hash1(key + 4.3));
-      let magnitude = hash1(key + 9.1);
-      let d = length(g - (cell + jitter));
-
-      // Tight core plus a faint halo, so stars survive tone mapping without aliasing.
-      let core = exp(-d * d * 900.0) * (0.35 + magnitude * magnitude * 3.0);
-      let halo = exp(-d * d * 60.0) * 0.045 * magnitude;
-      total += core + halo;
+  for (var i = 0; i < 8; i++) {
+    let cell = base + vec3f(f32(i & 1), f32((i >> 1) & 1), f32((i >> 2) & 1));
+    let h = hash3(cell + seed);
+    if (h.x > presence) {
+      continue;
     }
+    let jitter = hash3(cell + seed + 17.13);
+    let star = normalize(cell + jitter) * density;
+    // Angular separation from the chord in lattice units. Taking it from the
+    // dot product of two unit vectors would lose it to f32 cancellation.
+    let angle = length(p - star) / density;
+
+    // Heavy-tailed brightness: most stars are faint, a few dominate.
+    let flux = fluxScale * pow(h.y, 7.0);
+    // Temperatures skew cool — K and M stars outnumber the hot blue ones.
+    let temperature = mix(2800.0, 14000.0, h.z * h.z);
+    total += planckianRgb(temperature) * (flux * norm * exp(-angle * angle * inv2s2));
   }
   return total;
+}
+
+fn valueNoise(p: vec3f) -> f32 {
+  let i = floor(p);
+  let f = fract(p);
+  let u = f * f * (3.0 - 2.0 * f);
+  return mix(
+    mix(
+      mix(hash3(i).x, hash3(i + vec3f(1.0, 0.0, 0.0)).x, u.x),
+      mix(hash3(i + vec3f(0.0, 1.0, 0.0)).x, hash3(i + vec3f(1.0, 1.0, 0.0)).x, u.x),
+      u.y,
+    ),
+    mix(
+      mix(hash3(i + vec3f(0.0, 0.0, 1.0)).x, hash3(i + vec3f(1.0, 0.0, 1.0)).x, u.x),
+      mix(hash3(i + vec3f(0.0, 1.0, 1.0)).x, hash3(i + vec3f(1.0, 1.0, 1.0)).x, u.x),
+      u.y,
+    ),
+    u.z,
+  );
+}
+
+fn fbm(p: vec3f) -> f32 {
+  var total = 0.0;
+  var amplitude = 0.5;
+  var q = p;
+  for (var i = 0; i < 4; i++) {
+    total += valueNoise(q) * amplitude;
+    q = q * 2.03 + 11.7;
+    amplitude *= 0.5;
+  }
+  return total;
+}
+
+/// Normal of the galactic plane, tilted well away from the spin axis so the
+/// band crosses the default view at an angle instead of running along the disk.
+const GALACTIC_POLE: vec3f = vec3f(0.3401, -0.5202, 0.7835);
+/// Direction of the galactic center, which lies in the galactic plane.
+const GALACTIC_CENTER: vec3f = vec3f(0.9277, 0.0801, -0.3496);
+
+/// A faint Milky Way: a soft band along a great circle, broken up by noise and
+/// cut by a darker dust lane, brightening toward the galactic center. Kept far
+/// below the disk so it adds depth without flattening the contrast.
+fn milkyWay(d: vec3f) -> vec3f {
+  let latitude = dot(d, GALACTIC_POLE);
+  let band = exp(-latitude * latitude * 38.0);
+  if (band < 1e-3) {
+    return vec3f(0.0);
+  }
+  let clouds = fbm(d * 5.0);
+  let dust = smoothstep(0.35, 0.75, fbm(d * 9.0 + 3.1)) * exp(-latitude * latitude * 400.0);
+  let bulge = 1.0 + 1.6 * pow(max(dot(d, GALACTIC_CENTER), 0.0), 6.0);
+  let glow = band * (0.35 + 0.65 * clouds) * (1.0 - 0.7 * dust) * bulge;
+  return vec3f(0.0075, 0.0068, 0.0058) * glow;
 }
 
 /// Deterministic — required for the accumulation to converge. The per-sample
 /// jitter is what antialiases the stars, so this is where progressive
 /// refinement is most visible.
 fn background(d: vec3f) -> vec3f {
-  let fuv = cubeFace(d);
-
   // Very nearly black. A bright, busy sky flattens the contrast that makes the
   // disk read as incandescent, so the only ambient light here is a barely
   // perceptible cool cast to keep it from banding to flat zero.
   let axis = clamp(d.z * 0.5 + 0.5, 0.0, 1.0);
   var col = mix(vec3f(0.0016, 0.0022, 0.0038), vec3f(0.0028, 0.0030, 0.0060), axis);
 
+  col += milkyWay(d);
+
   // Sparse, so individual stars read against the black rather than forming a haze.
-  let bright = starLayer(fuv, 46.0, 0.030, 0.0);
-  let faint = starLayer(fuv, 115.0, 0.045, 31.0);
-
-  // Stars span their own range of spectral classes rather than all being white.
-  let tintSeed = hash1(floor(fuv * 60.0));
-  let tint = select(
-    mix(vec3f(0.62, 0.76, 1.0), vec3f(0.97, 0.97, 1.0), tintSeed / 0.5),
-    mix(vec3f(0.97, 0.97, 1.0), vec3f(1.0, 0.80, 0.62), (tintSeed - 0.5) / 0.5),
-    tintSeed > 0.5,
-  );
-
-  col += tint * (bright * 0.80 + faint * 0.22);
+  col += starLayer(d, 60.0, 0.030, 4.0e-6, 0.0);
+  col += starLayer(d, 150.0, 0.045, 0.8e-6, 31.0);
   return col;
 }
 
 // ---------------------------------------------------------------------------
-// Accretion disk (stylized — not radiative transfer)
+// Accretion disk — Cinematic (stylized, not radiative transfer)
 // ---------------------------------------------------------------------------
 
 /// Piecewise ramp over the five disk stops.
@@ -224,7 +368,27 @@ fn diskRamp(t: f32) -> vec3f {
   return mix(DISK_C3, DISK_C4, (x - 0.93) / 0.07);
 }
 
-/// Shade an equatorial-plane crossing.
+/// Lensing level of detail.
+///
+/// The direct image of the disk maps screen position to disk radius smoothly.
+/// Every higher-order image — light that wound around the hole before reaching
+/// the camera — is compressed exponentially, and by the second or third pass
+/// the whole radial profile is squeezed into a band thinner than a pixel. Point
+/// sampling that is aliasing a signal with no band limit, which is what makes
+/// the thin arcs beside the shadow look ragged: it is variance, not geometry.
+/// Rendering the disk with a flat color makes those same arcs perfectly smooth.
+///
+/// The image order is the number of equatorial crossings the ray has made, so
+/// it measures that compression directly and costs a counter. Past the first
+/// image the shading is faded to the emission of the bright inner ring, which
+/// is what dominates the stack anyway. This is the same trade a mip level
+/// makes for a minified texture: the detail is not resolvable, so do not
+/// pretend to resolve it.
+fn lensingLod(imageOrder: f32) -> f32 {
+  return smoothstep(1.0, 3.0, imageOrder);
+}
+
+/// Shade an equatorial-plane crossing, Cinematic style.
 ///
 /// Temperature follows the r^-0.75 falloff, completed with the standard
 /// Shakura-Sunyaev inner-boundary factor (1 - sqrt(r_isco/r))^0.25 so emission
@@ -238,27 +402,17 @@ fn diskRamp(t: f32) -> vec3f {
 /// The Doppler/beaming factor comes from the local prograde Keplerian angular
 /// velocity omega = 1/(r^1.5 + a) — crude, but it is what makes one side of the
 /// disk visibly brighter than the other.
-fn diskColor(xc: vec3f, pc: vec3f, rc: f32, a: f32, imageOrder: f32) -> vec3f {
+fn diskColor(
+  xc: vec3f,
+  pc: vec3f,
+  rc: f32,
+  a: f32,
+  traceSpin: f32,
+  imageOrder: f32,
+) -> vec3f {
   let rIsco = U.params.z;
   let rOuter = U.params.y;
-
-  // Lensing level of detail.
-  //
-  // The direct image of the disk maps screen position to disk radius smoothly.
-  // Every higher-order image — light that wound around the hole before reaching
-  // the camera — is compressed exponentially, and by the second or third pass
-  // the whole radial profile is squeezed into a band thinner than a pixel. Point
-  // sampling that is aliasing a signal with no band limit, which is what makes
-  // the thin arcs beside the shadow look ragged: it is variance, not geometry.
-  // Rendering the disk with a flat color makes those same arcs perfectly smooth.
-  //
-  // The image order is the number of equatorial crossings the ray has made, so
-  // it measures that compression directly and costs a counter. Past the first
-  // image the shading is faded to the emission of the bright inner ring, which
-  // is what dominates the stack anyway. This is the same trade a mip level
-  // makes for a minified texture: the detail is not resolvable, so do not
-  // pretend to resolve it.
-  let lod = smoothstep(1.0, 3.0, imageOrder);
+  let lod = lensingLod(imageOrder);
 
   let xRaw = max(rc / rIsco, 1.0);
   let x = mix(xRaw, DISK_LENSED_REFERENCE, lod);
@@ -274,7 +428,7 @@ fn diskColor(xc: vec3f, pc: vec3f, rc: f32, a: f32, imageOrder: f32) -> vec3f {
 
   // We integrate backward from the camera, so the photon's actual direction of
   // travel (emitter -> observer) is the reverse of dx/dlambda.
-  let deriv = geodesicRHS(xc, pc, a);
+  let deriv = geodesicRHS(xc, pc, traceSpin);
   let toObserver = -normalize(deriv.dx);
 
   let lorentz = inverseSqrt(max(1.0 - speed * speed, 1e-4));
@@ -308,10 +462,6 @@ fn diskColor(xc: vec3f, pc: vec3f, rc: f32, a: f32, imageOrder: f32) -> vec3f {
     lod,
   );
 
-  // Stefan-Boltzmann: a thermal emitter radiates as T^4. Combined with the
-  // r^-0.75 temperature law that puts the outer rim at a few percent of the peak,
-  // which is what concentrates the disk into a thin bright band with a dim tail
-  // instead of a broad filled wedge.
   let emissivity =
     pow(temperature, DISK_EMISSIVITY_POWER) * beaming * DISK_BRIGHTNESS * filaments;
 
@@ -326,6 +476,86 @@ fn diskColor(xc: vec3f, pc: vec3f, rc: f32, a: f32, imageOrder: f32) -> vec3f {
   let outerFade = 1.0 - smoothstep(rOuter * 0.8, rOuter, rc);
 
   return tint * emissivity * outerFade;
+}
+
+// ---------------------------------------------------------------------------
+// Accretion disk — Physical (Novikov-Thorne, exact redshift, blackbody)
+// ---------------------------------------------------------------------------
+
+/// Radial profile of the Novikov-Thorne thin disk's emitted flux (Page & Thorne
+/// 1974), unnormalized. Mirrors pageThorneFlux in diskReference.ts, which also
+/// supplies the peak the renderer divides by.
+fn pageThorneFlux(r: f32, a: f32, rIsco: f32) -> f32 {
+  let x = sqrt(r);
+  let x0 = sqrt(rIsco);
+  if (x <= x0) {
+    return 0.0;
+  }
+
+  let phase = acos(clamp(a, -1.0, 1.0)) / 3.0;
+  let third = 1.0471976;
+  let x1 = 2.0 * cos(phase - third);
+  let x2 = 2.0 * cos(phase + third);
+  let x3 = -2.0 * cos(phase);
+
+  let bracket = x - x0 - 1.5 * a * log(x / x0)
+    - pageThorneTerm(x, x0, a, x1, x2, x3)
+    - pageThorneTerm(x, x0, a, x2, x1, x3)
+    - pageThorneTerm(x, x0, a, x3, x1, x2);
+
+  return max(bracket, 0.0) / (x * x * x * x * (x * x * x - 3.0 * x + 2.0 * a));
+}
+
+/// One root's logarithmic term. (x_i - a)^2 / x_i is 0/0 at a = 0 for the root
+/// at the origin; its limit is zero, so the term is dropped there.
+fn pageThorneTerm(x: f32, x0: f32, a: f32, xi: f32, xj: f32, xk: f32) -> f32 {
+  if (abs(xi) < 1e-6) {
+    return 0.0;
+  }
+  return 3.0 * (xi - a) * (xi - a) / (xi * (xi - xj) * (xi - xk))
+    * log((x - xi) / (x0 - xi));
+}
+
+/// Redshift factor g = E_observed / E_emitted for a circular, prograde,
+/// Keplerian emitter seen from infinity. Mirrors diskRedshift in
+/// diskReference.ts:
+///
+///   u^t = (r^1.5 + a) / (r^0.75 sqrt(r^1.5 - 3 r^0.5 + 2a))
+///   g   = 1 / (u^t (1 - Omega L)),   Omega = 1 / (r^1.5 + a)
+///
+/// L is the photon's physical angular momentum per unit energy, conserved along
+/// the ray, so this one factor carries gravitational redshift, Doppler,
+/// transverse Doppler and frame dragging — no local velocity needed.
+fn diskRedshift(r: f32, a: f32, photonL: f32) -> f32 {
+  let sr = sqrt(r);
+  let r15 = r * sr;
+  let omega = 1.0 / (r15 + a);
+  let ut = (r15 + a) / (sqrt(sr) * sr * sqrt(max(r15 - 3.0 * sr + 2.0 * a, 1e-6)));
+  return 1.0 / (ut * max(1.0 - omega * photonL, 1e-6));
+}
+
+/// Shade a disk crossing physically.
+///
+/// A thermal spectrum stays a blackbody under a frequency shift, at the shifted
+/// temperature: I_nu,obs = g^3 B_nu/g(T) = B_nu(gT). So both the color and the
+/// brightness of a disk element come from T_obs = g * T_emit alone, with
+/// T_emit ~ F^(1/4) from the Novikov-Thorne flux. Everything that makes one side
+/// bluer and brighter than the other falls out of that; there is nothing to tune.
+fn diskPhysical(rc: f32, a: f32, photonL: f32, imageOrder: f32) -> vec3f {
+  let rIsco = U.params.z;
+  let rOuter = U.params.y;
+
+  // Same level of detail as the Cinematic path: higher-order images fall back
+  // to the ring that dominates them. Only the flux is affected; the redshift is
+  // smooth across the image and keeps the true radius.
+  let rEmit = mix(rc, rIsco * DISK_LENSED_REFERENCE, lensingLod(imageOrder));
+  let flux = pageThorneFlux(rEmit, a, rIsco) * U.disk.z;
+  let emitted = U.disk.y * pow(max(flux, 0.0), 0.25);
+  let observed = emitted * diskRedshift(rc, a, photonL);
+
+  let rgb = max(xyzToLinearSrgb(blackbodyXYZ(observed) * U.disk.w), vec3f(0.0));
+  let outerFade = 1.0 - smoothstep(rOuter * 0.8, rOuter, rc);
+  return rgb * outerFade;
 }
 
 // ---------------------------------------------------------------------------
@@ -384,28 +614,31 @@ fn slabEntry(xPrev: vec3f, rPrev: f32, xNext: vec3f, rNext: f32) -> SlabHit {
 // ---------------------------------------------------------------------------
 
 fn traceRadiance(origin: vec3f, direction: vec3f) -> vec3f {
+  // Physical spin, for the disk; the geodesics run in its time reverse.
   let a = U.params.x;
+  let traceSpin = -a;
   let rOuter = U.params.y;
   let rIsco = U.params.z;
   let rPlus = U.params.w;
   let diskEnabled = U.options.x > 0.5;
+  let physical = U.disk.x > 0.5;
   let maxSteps = u32(U.options.y);
 
   var st: State;
   st.x = origin;
-  st.p = nullMomentum(origin, direction, a);
+  st.p = nullMomentum(origin, direction, traceSpin);
 
   // Carried across iterations rather than recomputed: the slab test needs the
   // radius at both ends of a step, and the far end becomes the near end next
   // time round.
-  var r = kerrRadius(st.x, a);
+  var r = kerrRadius(st.x, traceSpin);
 
   // How many times the ray has met the equatorial plane. The first meeting that
   // lands on the disk is the direct image, the second is light that wound once
-  // around the hole, and so on — so this is the image order, and diskColor uses
-  // it to decide how much radial detail is still resolvable. Crossings inside
-  // the ISCO count: the ray passed through the disk plane there, it just found
-  // no emission, and it wound just as far getting there.
+  // around the hole, and so on — so this is the image order, and the shading
+  // uses it to decide how much radial detail is still resolvable. Crossings
+  // inside the ISCO count: the ray passed through the disk plane there, it just
+  // found no emission, and it wound just as far getting there.
   var crossings = 0.0;
 
   var step: u32 = 0u;
@@ -422,7 +655,7 @@ fn traceRadiance(origin: vec3f, direction: vec3f) -> vec3f {
     // The RK4 stage-one derivative, hoisted: the escape branch, the step
     // limiter and the integrator all want it, so evaluating it once here makes
     // the plane limiter free rather than a fifth metric evaluation per step.
-    let deriv = geodesicRHS(st.x, st.p, a);
+    let deriv = geodesicRHS(st.x, st.p, traceSpin);
 
     // Escaped: sample the background along the true coordinate velocity rather
     // than the momentum, which still differ slightly at r = 60.
@@ -437,8 +670,8 @@ fn traceRadiance(origin: vec3f, direction: vec3f) -> vec3f {
 
     let previous = st;
     let previousR = r;
-    st = rk4StepFrom(st, deriv, a, h);
-    r = kerrRadius(st.x, a);
+    st = rk4StepFrom(st, deriv, traceSpin, h);
+    r = kerrRadius(st.x, traceSpin);
 
     // Where the ray meets the disk. The disk is opaque, so the first hit along
     // the backward ray is the last emission the observer sees — that is what
@@ -448,15 +681,15 @@ fn traceRadiance(origin: vec3f, direction: vec3f) -> vec3f {
       if (entry.hit) {
         crossings += 1.0;
         let crossing = mix(previous.x, st.x, entry.t);
-        let rc = kerrRadius(crossing, a);
+        let rc = kerrRadius(crossing, traceSpin);
         if (rc >= rIsco && rc <= rOuter) {
-          return diskColor(
-            crossing,
-            mix(previous.p, st.p, entry.t),
-            rc,
-            a,
-            crossings,
-          );
+          let pc = mix(previous.p, st.p, entry.t);
+          if (physical) {
+            // p_t = -1, so p_phi is already per unit energy. Negated because
+            // the traced ray is the time reverse of the real photon.
+            return diskPhysical(rc, a, -angularMomentum(crossing, pc), crossings);
+          }
+          return diskColor(crossing, pc, rc, a, traceSpin, crossings);
         }
       }
     }
@@ -492,12 +725,14 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let uv = (vec2f(pixel) + jitter) / vec2f(resolution);
   let ndc = vec2f(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
 
+  // Pan is an off-axis lens shift: the image plane slides under a camera that
+  // keeps facing the hole.
   let tanHalfFov = U.camRight.w;
   let aspect = U.camUp.w;
   let direction = normalize(
     U.camFwd.xyz
-      + U.camRight.xyz * (ndc.x * tanHalfFov * aspect)
-      + U.camUp.xyz * (ndc.y * tanHalfFov),
+      + U.camRight.xyz * (ndc.x * tanHalfFov * aspect + U.camPos.w)
+      + U.camUp.xyz * (ndc.y * tanHalfFov + U.camFwd.w),
   );
 
   let radiance = traceRadiance(U.camPos.xyz, direction);

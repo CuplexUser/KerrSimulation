@@ -25,7 +25,6 @@ import { UNIFORM_BYTES, UNIFORM_FLOATS } from '../src/gpu/uniforms.ts';
 import {
   ESCAPE_RADIUS,
   FATE_ORDER,
-  GRAD_EPS,
   HORIZON_PAD,
   PLANE_APPROACH,
   PLANE_STEP_MIN,
@@ -45,6 +44,7 @@ import {
 const kerrMath = readShader('kerr_math');
 const trace = readShader('trace');
 const present = readShader('present');
+const bloom = readShader('bloom');
 const validate = readShader('validate');
 
 // ---------------------------------------------------------------------------
@@ -59,7 +59,6 @@ describe('kerr_math.wgsl constants mirror kerrReference.ts', () => {
     KERR_HORIZON_PAD: HORIZON_PAD,
     KERR_PLANE_APPROACH: PLANE_APPROACH,
     KERR_PLANE_STEP_MIN: PLANE_STEP_MIN,
-    KERR_GRAD_EPS: GRAD_EPS,
   };
 
   const declared = scalarConstants(kerrMath);
@@ -181,6 +180,8 @@ describe('uniform buffer layout', () => {
     'options',
     'band',
     'bloom',
+    'disk',
+    'view',
   ];
 
   test('trace.wgsl declares the expected fields in the expected order', () => {
@@ -196,6 +197,13 @@ describe('uniform buffer layout', () => {
     const presentFields = structFields(present, 'Uniforms');
     assert.ok(presentFields, 'present.wgsl no longer declares a Uniforms struct');
     assert.deepEqual(presentFields, traceFields);
+  });
+
+  test('bloom.wgsl declares the identical struct', () => {
+    const traceFields = structFields(trace, 'Uniforms');
+    const bloomFields = structFields(bloom, 'Uniforms');
+    assert.ok(bloomFields, 'bloom.wgsl no longer declares a Uniforms struct');
+    assert.deepEqual(bloomFields, traceFields);
   });
 
   test('every field is a vec4f', () => {

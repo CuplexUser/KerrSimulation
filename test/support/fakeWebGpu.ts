@@ -146,6 +146,7 @@ export function createFakeGpu(
         setBindGroup(_index: number, group: Labelled) {
           pass.bindGroup = group.label ?? '';
         },
+        setBlendConstant() {},
         draw() {},
         end() {
           record.passes.push(pass);

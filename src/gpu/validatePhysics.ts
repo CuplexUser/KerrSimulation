@@ -10,14 +10,10 @@
  * Node script cannot is that the actual shader text is correct — a transcription
  * slip between the TypeScript reference and the WGSL would show up here as a
  * disagreement on fate, closest approach, or a conserved quantity.
- *
- * Also sweeps the finite-difference epsilon on the GPU, because the value 0.0015
- * was tuned in f64 and f32 has a different roundoff/truncation balance.
  */
 
 import {
   FATE_ORDER,
-  GRAD_EPS,
   REFERENCE_MAX_STEPS,
   REFERENCE_RAYS,
   iscoRadius,
@@ -35,10 +31,9 @@ const sci = (n: number): string => n.toExponential(2);
 /** Tolerances for f32-vs-f64 agreement. */
 const TOL = {
   /**
-   * f32 makes the finite-difference gradient far noisier than f64: |W| is O(1)
-   * near the hole, f32 epsilon is ~6e-8, and dividing by 2*eps amplifies that to
-   * ~1e-5 per gradient component, which random-walks over hundreds of RK4 steps.
-   * A geometry error would blow past this by orders of magnitude.
+   * f32 roundoff random-walks over hundreds of RK4 steps. The gradient is
+   * analytic now, so this is looser than it needs to be — a geometry error
+   * would still blow past it by orders of magnitude.
    */
   maxAbsH: 5e-3,
   maxRelL: 5e-3,
@@ -56,15 +51,10 @@ export type RayComparison = {
   ok: boolean;
 };
 
-export type EpsilonSample = { eps: number; worstAbsH: number; worstRelL: number };
-
 export type ValidationReport = {
   passed: boolean;
   comparisons: RayComparison[];
   iscoMaxDiff: number;
-  epsilonSweep: EpsilonSample[];
-  recommendedEps: number;
-  configuredEps: number;
 };
 
 type RawResult = {
@@ -78,11 +68,8 @@ type RawResult = {
   isco: number;
 };
 
-/**
- * Dispatch the validation shader once at a given finite-difference epsilon and
- * read the per-ray results back.
- */
-async function runOnGpu(device: GPUDevice, eps: number): Promise<RawResult[]> {
+/** Dispatch the validation shader once and read the per-ray results back. */
+async function runOnGpu(device: GPUDevice): Promise<RawResult[]> {
   const rayCount = REFERENCE_RAYS.length;
 
   const specData = new Float32Array(rayCount * SPEC_FLOATS);
@@ -129,7 +116,7 @@ async function runOnGpu(device: GPUDevice, eps: number): Promise<RawResult[]> {
   const pipeline = await device.createComputePipelineAsync({
     label: 'validate-pipeline',
     layout: 'auto',
-    compute: { module, entryPoint: 'main', constants: { KERR_GRAD_EPS: eps } },
+    compute: { module, entryPoint: 'main' },
   });
 
   const bindGroup = device.createBindGroup({
@@ -175,10 +162,10 @@ async function runOnGpu(device: GPUDevice, eps: number): Promise<RawResult[]> {
 export async function validatePhysicsOnGpu(
   device: GPUDevice,
 ): Promise<ValidationReport> {
-  const gpuResults = await runOnGpu(device, GRAD_EPS);
+  const gpuResults = await runOnGpu(device);
 
   const cpuResults = REFERENCE_RAYS.map((ray) =>
-    traceRay(ray.origin, ray.direction, ray.a, REFERENCE_MAX_STEPS, GRAD_EPS),
+    traceRay(ray.origin, ray.direction, ray.a, REFERENCE_MAX_STEPS),
   );
 
   const comparisons: RayComparison[] = REFERENCE_RAYS.map((ray, i) => {
@@ -223,31 +210,10 @@ export async function validatePhysicsOnGpu(
     ),
   );
 
-  // f32 has a different optimum than f64: too small an epsilon is roundoff
-  // dominated, too large is truncation dominated. Measure on the real device.
-  const epsilonSweep: EpsilonSample[] = [];
-  for (const eps of [0.0005, 0.0015, 0.003, 0.005, 0.01, 0.02]) {
-    // Sequential on purpose: each iteration is a full dispatch plus a buffer
-    // map, and running them concurrently would just contend for the same queue.
-    // oxlint-disable-next-line no-await-in-loop
-    const results = await runOnGpu(device, eps);
-    epsilonSweep.push({
-      eps,
-      worstAbsH: Math.max(...results.map((r) => r.maxAbsH)),
-      worstRelL: Math.max(...results.map((r) => r.maxRelL)),
-    });
-  }
-  const recommendedEps = epsilonSweep.reduce((best, s) =>
-    s.worstAbsH < best.worstAbsH ? s : best,
-  ).eps;
-
   const report: ValidationReport = {
     passed: comparisons.every((c) => c.ok) && iscoMaxDiff < TOL.isco,
     comparisons,
     iscoMaxDiff,
-    epsilonSweep,
-    recommendedEps,
-    configuredEps: GRAD_EPS,
   };
 
   logReport(report);
@@ -280,15 +246,5 @@ function logReport(report: ValidationReport): void {
     `ISCO agreement (GPU iscoRadius vs CPU): max abs diff = ${sci(report.iscoMaxDiff)}`,
   );
 
-  console.log(
-    `Finite-difference epsilon sweep on this GPU (configured: ${report.configuredEps}, best measured: ${report.recommendedEps}):`,
-  );
-  console.table(
-    report.epsilonSweep.map((s) => ({
-      eps: s.eps,
-      'worst max|H|': sci(s.worstAbsH),
-      'worst max dL/L': sci(s.worstRelL),
-    })),
-  );
   console.groupEnd();
 }

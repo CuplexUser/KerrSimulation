@@ -19,6 +19,13 @@ import { strict as assert } from 'node:assert';
 import { describe, test } from 'node:test';
 
 import {
+  blackbodyXYZ,
+  diskRedshift,
+  pageThorneFlux,
+  pageThorneFluxPeak,
+  xyzToLinearSrgb,
+} from '../src/physics/diskReference.ts';
+import {
   ESCAPE_RADIUS,
   GRAD_EPS,
   HORIZON_PAD,
@@ -33,11 +40,13 @@ import {
   angularMomentum,
   dot,
   geodesicRHS,
+  geodesicRHSFiniteDiff,
   hamiltonian,
   horizonRadius,
   iscoRadius,
   kerrRadius,
   length,
+  mul,
   normalize,
   nullMomentum,
   planeLimitedStep,
@@ -52,7 +61,7 @@ import {
 const SPINS = [0, 0.1, 0.3, 0.5, 0.7, 0.9, 0.99, 0.998];
 
 const traceImpact = (a: number, impact: number) =>
-  traceRay(v3(40, impact, 0), v3(-1, 0, 0), a, REFERENCE_MAX_STEPS, GRAD_EPS);
+  traceRay(v3(40, impact, 0), v3(-1, 0, 0), a, REFERENCE_MAX_STEPS);
 
 /** The photon-orbit radius, kept here purely to assert the ISCO is not it. */
 const photonOrbitRadius = (a: number) =>
@@ -60,7 +69,7 @@ const photonOrbitRadius = (a: number) =>
 
 /** Worst |H| on the plunging ray at a given step scale. */
 const plungeResidual = (scale: number) =>
-  traceRay(v3(30, 4, 0), v3(-1, 0, 0), 0, 50_000, GRAD_EPS, 0, scale).maxAbsH;
+  traceRay(v3(30, 4, 0), v3(-1, 0, 0), 0, 50_000, undefined, 0, scale).maxAbsH;
 
 // ---------------------------------------------------------------------------
 
@@ -180,7 +189,6 @@ describe('conservation along the reference ray suite', () => {
         ray.direction,
         ray.a,
         REFERENCE_MAX_STEPS,
-        GRAD_EPS,
       );
 
       assert.ok(
@@ -347,5 +355,201 @@ describe('step control', () => {
         );
       }
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('analytic gradient', () => {
+  /** Deterministic points and directions outside every horizon in SPINS. */
+  const probes = SPINS.flatMap((a) =>
+    Array.from({ length: 24 }, (_, i) => {
+      const t = i * 0.618034;
+      const radius = 3 + (i % 6) * 4;
+      const x = v3(
+        radius * Math.cos(t * 7) * Math.sin(1 + t),
+        radius * Math.sin(t * 7) * Math.sin(1 + t),
+        radius * Math.cos(1 + t),
+      );
+      const d = normalize(v3(Math.cos(t * 3), Math.sin(t * 5), Math.cos(t * 11)));
+      return { a, x, p: nullMomentum(x, d, a) };
+    }),
+  );
+
+  const worst = (eps: number) =>
+    Math.max(
+      ...probes.map(({ a, x, p }) => {
+        const analytic = geodesicRHS(x, p, a).dp;
+        const numeric = geodesicRHSFiniteDiff(x, p, a, eps).dp;
+        return length(sub(analytic, numeric)) / Math.max(length(numeric), 1e-12);
+      }),
+    );
+
+  test('agrees with central differences of W to truncation error', () => {
+    assert.ok(worst(1e-5) < 1e-7, `worst relative difference ${worst(1e-5)}`);
+  });
+
+  test('the disagreement falls as O(eps^2), so it is truncation and not a sign error', () => {
+    const coarse = worst(1e-2);
+    const fine = worst(1e-3);
+    assert.ok(fine < coarse / 50, `${coarse} -> ${fine}`);
+  });
+
+  test('dx/dlambda is unchanged by the switch', () => {
+    for (const { a, x, p } of probes) {
+      const analytic = geodesicRHS(x, p, a).dx;
+      const numeric = geodesicRHSFiniteDiff(x, p, a).dx;
+      assert.ok(length(sub(analytic, numeric)) < 1e-12);
+    }
+  });
+
+  test('a numeric eps still selects the finite-difference oracle', () => {
+    const { a, x, p } = probes[5];
+    assert.deepEqual(geodesicRHS(x, p, a, GRAD_EPS), geodesicRHSFiniteDiff(x, p, a, GRAD_EPS));
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+/**
+ * Largest root of the equatorial radial potential for a photon with unit
+ * energy and angular momentum L in Kerr spin a (Boyer-Lindquist):
+ *   R(r) = (r^2 + a^2 - a L)^2 - Delta (L - a)^2
+ * That is the closest approach — coordinate independent, and computed without
+ * integrating anything.
+ */
+const turningRadius = (a: number, l: number): number => {
+  const radial = (r: number) =>
+    (r * r + a * a - a * l) ** 2 - (r * r - 2 * r + a * a) * (l - a) ** 2;
+  let lo = 1;
+  let hi = 60;
+  while (radial(lo) > 0) lo += 0.01;
+  for (let i = 0; i < 80; i++) {
+    const mid = (lo + hi) / 2;
+    if (radial(mid) > 0) hi = mid;
+    else lo = mid;
+  }
+  return hi;
+};
+
+describe('time orientation of the traced rays', () => {
+  // Equatorial rays that escape at both spins, launched from the camera side.
+  const LAUNCHES = [8, -8, 7, -7.5];
+
+  test('a ray traced forward in Kerr(-a) follows the real photon of Kerr(a)', () => {
+    // The renderer launches rays future-directed away from the camera, the time
+    // reverse of the light that arrives. Time reversal takes Kerr(a) to Kerr(-a)
+    // and negates the photon's angular momentum, so a ray traced in -a with L
+    // must turn where a physical photon in +a with -L does.
+    const a = 0.9;
+    for (const b of LAUNCHES) {
+      const origin = v3(40, b, 0);
+      const traced = traceImpact(-a, b);
+      const l = angularMomentum(origin, nullMomentum(origin, v3(-1, 0, 0), -a));
+      const expected = turningRadius(a, -l);
+      assert.ok(
+        Math.abs(traced.minRadius - expected) < 2e-3,
+        `b=${b}: traced ${traced.minRadius}, physical ${expected}`,
+      );
+    }
+  });
+
+  test('tracing in +a would instead render the counter-rotating hole', () => {
+    const a = 0.9;
+    const b = 8;
+    const origin = v3(40, b, 0);
+    const l = angularMomentum(origin, nullMomentum(origin, v3(-1, 0, 0), a));
+    const wrong = traceImpact(a, b).minRadius;
+    assert.ok(Math.abs(wrong - turningRadius(a, -l)) > 0.5);
+  });
+
+  test('integrating the arriving photon backward in time agrees with the analytic turn', () => {
+    // Independent of the -a argument: take the physical photon at the camera
+    // (momentum pointing into it) and step it back in time with negative h.
+    const a = 0.9;
+    for (const b of LAUNCHES) {
+      let x = v3(40, b, 0);
+      let p = nullMomentum(x, mul(v3(-1, 0, 0), -1), a);
+      const l = angularMomentum(x, p);
+      let rMin = Infinity;
+      for (let i = 0; i < 20_000; i++) {
+        const r = kerrRadius(x, a);
+        rMin = Math.min(rMin, r);
+        if (r > ESCAPE_RADIUS) break;
+        ({ x, p } = rk4Step(x, p, a, -adaptiveStep(r)));
+      }
+      assert.ok(Math.abs(rMin - turningRadius(a, l)) < 2e-3, `b=${b}`);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+/** Linear sRGB of a blackbody at unit luminance. */
+const blackbodyRgb = (t: number) => {
+  const xyz = blackbodyXYZ(t);
+  return xyzToLinearSrgb([xyz[0] / xyz[1], 1, xyz[2] / xyz[1]]);
+};
+
+describe('physical disk shading', () => {
+  test('redshift reduces to sqrt(1 - 3/r) face-on at a = 0', () => {
+    // L = 0 leaves only gravitational redshift and time dilation of the orbit.
+    for (const r of [6, 8, 12, 20, 40]) {
+      assert.ok(Math.abs(diskRedshift(r, 0, 0) - Math.sqrt(1 - 3 / r)) < 1e-12);
+    }
+  });
+
+  test('the approaching side is blueshifted relative to the receding side', () => {
+    // Positive L is emitted along the orbital motion, toward an observer the
+    // gas is moving toward.
+    for (const a of [0, 0.5, 0.9]) {
+      const r = iscoRadius(a) * 1.5;
+      assert.ok(diskRedshift(r, a, 4) > diskRedshift(r, a, 0));
+      assert.ok(diskRedshift(r, a, 0) > diskRedshift(r, a, -4));
+    }
+  });
+
+  test('redshift approaches 1 far out', () => {
+    assert.ok(Math.abs(diskRedshift(1e6, 0.9, 0) - 1) < 1e-5);
+  });
+
+  test('the flux vanishes at the ISCO and peaks just outside it', () => {
+    for (const a of [0, 0.5, 0.9, 0.998]) {
+      const rIsco = iscoRadius(a);
+      assert.equal(pageThorneFlux(rIsco, a, rIsco), 0);
+      assert.ok(pageThorneFlux(rIsco * 1.5, a, rIsco) > pageThorneFlux(rIsco * 1.02, a, rIsco));
+      assert.ok(pageThorneFlux(rIsco * 1.5, a, rIsco) > pageThorneFlux(rIsco * 5, a, rIsco));
+    }
+  });
+
+  test('the Schwarzschild flux peaks at the known r = 9.55', () => {
+    let best = 0;
+    let peakAt = 0;
+    for (let r = 6.01; r < 20; r += 0.005) {
+      const f = pageThorneFlux(r, 0, 6);
+      if (f > best) [best, peakAt] = [f, r];
+    }
+    assert.ok(Math.abs(peakAt - 9.55) < 0.02, `peak at ${peakAt}`);
+    assert.ok(Math.abs(pageThorneFluxPeak(0) - best) / best < 1e-3);
+  });
+
+  test('the flux falls as r^-3 far out', () => {
+    const f1 = pageThorneFlux(400, 0.5, iscoRadius(0.5));
+    const f2 = pageThorneFlux(800, 0.5, iscoRadius(0.5));
+    assert.ok(Math.abs(f1 / f2 - 8) < 0.5);
+  });
+
+  test('a 6500 K blackbody lands near the D65 white point', () => {
+    const [x, y, z] = blackbodyXYZ(6500);
+    const sum = x + y + z;
+    assert.ok(Math.abs(x / sum - 0.3135) < 0.003);
+    assert.ok(Math.abs(y / sum - 0.3237) < 0.003);
+  });
+
+  test('hotter reads bluer and brighter', () => {
+    const [r3, , b3] = blackbodyRgb(3000);
+    const [r10, , b10] = blackbodyRgb(10_000);
+    assert.ok(b3 / r3 < b10 / r10);
+    assert.ok(blackbodyXYZ(10_000)[1] > blackbodyXYZ(3000)[1]);
   });
 });

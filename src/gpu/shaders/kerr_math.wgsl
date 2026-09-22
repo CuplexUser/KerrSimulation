@@ -27,12 +27,6 @@ const KERR_HORIZON_PAD: f32 = 1.02;
 const KERR_PLANE_APPROACH: f32 = 0.85;
 const KERR_PLANE_STEP_MIN: f32 = 0.01;
 
-// Central-difference step for dH/dx. Pipeline-overridable so the validation
-// harness can sweep it on the actual GPU: the value 0.0015 was tuned against an
-// f64 prototype, and f32 has a different roundoff/truncation balance, so it is
-// worth measuring rather than assuming.
-override KERR_GRAD_EPS: f32 = 0.0015;
-
 struct MetricFK {
   f: f32,
   k: vec3f,
@@ -99,25 +93,57 @@ fn angularMomentum(x: vec3f, p: vec3f) -> f32 {
 
 /// Geodesic RHS.
 ///   dx/dlambda = dH/dp = p - f * S * k   (exact closed form, g^uv p_v)
-///   dp/dlambda = -dH/dx                  (central differences; no autodiff here)
+///   dp/dlambda = -dH/dx = 0.5 S^2 grad f + f S (p . grad k)   (closed form)
+///
+/// The gradient is analytic. It used to be a central difference of W over the
+/// three axes, which cost six extra metric evaluations per call — 28 per RK4
+/// step instead of 4 — and carried an f32 roundoff floor from dividing by 2*eps.
+///
+/// Everything hangs off grad r, from implicitly differentiating the
+/// Kerr-Schild quartic r^4 - (rho^2 - a^2) r^2 - a^2 z^2 = 0:
+///   grad r = r / D * (x r^2, y r^2, z (r^2 + a^2)),   D = r^4 + a^2 z^2
+/// kerrReference.ts keeps the finite-difference form as an independent oracle.
 fn geodesicRHS(x: vec3f, p: vec3f, a: f32) -> Deriv {
-  let m = kerrFK(x, a);
-  let s = 1.0 + dot(m.k, p);
+  let r = kerrRadius(x, a);
+  let a2 = a * a;
+  let r2 = r * r;
+  let q = r2 + a2;
+  let invQ = 1.0 / q;
+  let d = r2 * r2 + a2 * x.z * x.z;
+  let invD = 1.0 / d;
 
-  let e = KERR_GRAD_EPS;
-  let inv2e = 1.0 / (2.0 * e);
-  let ex = vec3f(e, 0.0, 0.0);
-  let ey = vec3f(0.0, e, 0.0);
-  let ez = vec3f(0.0, 0.0, e);
-
-  var d: Deriv;
-  d.dx = p - m.k * (m.f * s);
-  d.dp = vec3f(
-    -(metricPotential(x + ex, p, a) - metricPotential(x - ex, p, a)) * inv2e,
-    -(metricPotential(x + ey, p, a) - metricPotential(x - ey, p, a)) * inv2e,
-    -(metricPotential(x + ez, p, a) - metricPotential(x - ez, p, a)) * inv2e,
+  let f = 2.0 * r2 * r * invD;
+  let k = vec3f(
+    (r * x.x + a * x.y) * invQ,
+    (r * x.y - a * x.x) * invQ,
+    x.z / r,
   );
-  return d;
+  let s = 1.0 + dot(k, p);
+
+  let gradR = vec3f(x.x * r2, x.y * r2, x.z * q) * (r * invD);
+
+  // grad f = grad r * (6 r^2 D - 8 r^6) / D^2 - z_hat * 4 r^3 a^2 z / D^2
+  let invD2 = invD * invD;
+  let gradF =
+    gradR * ((6.0 * r2 * d - 8.0 * r2 * r2 * r2) * invD2)
+    - vec3f(0.0, 0.0, 4.0 * r2 * r * a2 * x.z * invD2);
+
+  // p . dk/dx_i, split into the part through r and the explicit part.
+  let throughR =
+    (p.x * x.x + p.y * x.y) * invQ
+    - 2.0 * r * (p.x * k.x + p.y * k.y) * invQ
+    - p.z * x.z / r2;
+  let direct = vec3f(
+    (r * p.x - a * p.y) * invQ,
+    (a * p.x + r * p.y) * invQ,
+    p.z / r,
+  );
+  let pGradK = gradR * throughR + direct;
+
+  var out: Deriv;
+  out.dx = p - k * (f * s);
+  out.dp = gradF * (0.5 * s * s) + pGradK * (f * s);
+  return out;
 }
 
 /// One classical RK4 step, given a k1 the caller has already evaluated.

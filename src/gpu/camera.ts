@@ -14,6 +14,14 @@ export type CameraState = {
   elevation: number;
   radius: number;
   fovDegrees: number;
+  /**
+   * Pan, as an off-axis lens shift in units of the half-height of the image
+   * plane: 1 moves the view center by half a screen. The eye stays put and keeps
+   * facing the hole, so panning reframes the picture without changing which
+   * light reaches the camera — no approximation enters the physics.
+   */
+  panX: number;
+  panY: number;
 };
 
 export type CameraBasis = {
@@ -22,6 +30,8 @@ export type CameraBasis = {
   right: [number, number, number];
   up: [number, number, number];
   tanHalfFov: number;
+  /** Lens shift in image-plane units (tanHalfFov already applied). */
+  shift: [number, number];
 };
 
 /** Keeps the up-vector construction from degenerating at the poles. */
@@ -35,6 +45,9 @@ export const MAX_ELEVATION = Math.PI / 2 - 0.02;
  */
 export const MIN_RADIUS = 6;
 export const MAX_RADIUS = 55;
+
+/** Pan limit, in half-screens. Far enough to frame the disk edge, no further. */
+export const MAX_PAN = 1.5;
 
 /**
  * Almost exactly edge-on, and far enough out that the disk sits inside the field
@@ -50,6 +63,8 @@ export const DEFAULT_CAMERA: CameraState = {
   elevation: 0.055,
   radius: 40,
   fovDegrees: 45,
+  panX: 0,
+  panY: 0,
 };
 
 export const clampElevation = (e: number): number =>
@@ -57,6 +72,8 @@ export const clampElevation = (e: number): number =>
 
 export const clampRadius = (r: number): number =>
   Math.min(Math.max(r, MIN_RADIUS), MAX_RADIUS);
+
+export const clampPan = (p: number): number => Math.min(Math.max(p, -MAX_PAN), MAX_PAN);
 
 type Vec3 = [number, number, number];
 
@@ -90,13 +107,60 @@ export function cameraBasis(camera: CameraState): CameraBasis {
   const right = normalize(cross(forward, worldUp));
   const up = cross(right, forward);
 
+  const tanHalfFov = Math.tan((camera.fovDegrees * Math.PI) / 360);
   return {
     eye,
     forward,
     right,
     up,
-    tanHalfFov: Math.tan((camera.fovDegrees * Math.PI) / 360),
+    tanHalfFov,
+    shift: [camera.panX * tanHalfFov, camera.panY * tanHalfFov],
   };
+}
+
+/** Time constant of the camera's approach to its target, in milliseconds. */
+export const CAMERA_EASE_MS = 70;
+
+/** Below this every component counts as having arrived. */
+const SETTLE_EPSILON = 1e-4;
+
+/**
+ * Advance `current` toward `target` over `dtMs`, frame-rate independently.
+ *
+ * Input writes the target; the renderer draws the current state. Easing the
+ * gap exponentially turns a notched wheel's discrete jumps and a mouse's
+ * jittery deltas into continuous motion. Radius eases in log space so a zoom
+ * feels the same speed at any distance.
+ *
+ * Returns true while the camera is still moving, and snaps exactly onto the
+ * target once it is close enough that another step would be invisible.
+ */
+export function easeCamera(current: CameraState, target: CameraState, dtMs: number): boolean {
+  const k = 1 - Math.exp(-Math.max(dtMs, 0) / CAMERA_EASE_MS);
+  const logRadius = Math.log(current.radius);
+  const logTarget = Math.log(target.radius);
+
+  const gaps = [
+    target.azimuth - current.azimuth,
+    target.elevation - current.elevation,
+    logTarget - logRadius,
+    target.panX - current.panX,
+    target.panY - current.panY,
+    target.fovDegrees - current.fovDegrees,
+  ];
+  if (gaps.every((gap) => Math.abs(gap) < SETTLE_EPSILON)) {
+    const moved = gaps.some((gap) => gap !== 0);
+    Object.assign(current, target);
+    return moved;
+  }
+
+  current.azimuth += gaps[0] * k;
+  current.elevation += gaps[1] * k;
+  current.radius = Math.exp(logRadius + gaps[2] * k);
+  current.panX += gaps[3] * k;
+  current.panY += gaps[4] * k;
+  current.fovDegrees += gaps[5] * k;
+  return true;
 }
 
 /**

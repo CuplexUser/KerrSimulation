@@ -12,7 +12,11 @@
  *   banding rather than noise and do not average away with more samples.
  *
  *   Presentation — the texture on screen must be the last *complete* one, or
- *   every frame shows a partly-updated image.
+ *   every frame shows a partly-updated image. That includes the moment a drag
+ *   starts or ends: the old image stays up until the new one is whole.
+ *
+ *   Interaction — a moving camera must redraw the whole image every frame, at a
+ *   resolution that adapts to hold the frame rate, without reallocating.
  *
  *   Reset scope — exposure and bloom are applied at present time and must not
  *   discard converged samples; anything that changes the geodesics must.
@@ -24,7 +28,9 @@
 import { strict as assert } from 'node:assert';
 import { afterEach, describe, test } from 'node:test';
 
+import { DEFAULT_CAMERA } from '../src/gpu/camera.ts';
 import {
+  BLOOM_LEVELS,
   DEFAULT_SCENE,
   KerrRenderer,
   MAX_ACCUMULATED_SAMPLES,
@@ -38,6 +44,7 @@ const CSS_HEIGHT = 600;
 
 /** Uniform slot indices, mirroring the layout documented in uniforms.ts. */
 const SLOT = {
+  eyeX: 0,
   spin: 16,
   diskOuterRadius: 17,
   iscoRadius: 18,
@@ -58,6 +65,10 @@ const SLOT = {
   bloomHeight: 33,
   bloomThreshold: 34,
   bloomStrength: 35,
+  shading: 36,
+  peakTemperature: 37,
+  presentWidth: 40,
+  presentHeight: 41,
 };
 
 const read = (frame: FrameRecord, slot: keyof typeof SLOT): number =>
@@ -122,15 +133,15 @@ describe('frame structure', () => {
     const [frame] = gpu.frames;
 
     assert.ok(frame.compute, 'the first frame did not dispatch the tracer');
+    const down = Array.from({ length: BLOOM_LEVELS }, (_, i) => `kerr-bloom-down-${i}`);
+    const up = Array.from(
+      { length: BLOOM_LEVELS - 1 },
+      (_, i) => `kerr-bloom-up-${BLOOM_LEVELS - 2 - i}`,
+    );
     assert.deepEqual(
       frame.passes.map((pass) => pass.label),
-      [
-        'kerr-bloom-bright',
-        'kerr-bloom-blur-h',
-        'kerr-bloom-blur-v',
-        'kerr-present-pass',
-      ],
-      'bloom must run bright, across, down, and present last',
+      [...down, ...up, 'kerr-present-pass'],
+      'bloom must go all the way down, all the way back up, and present last',
     );
   });
 
@@ -145,12 +156,21 @@ describe('frame structure', () => {
     assert.equal(read(frame, 'traceHeight'), CSS_HEIGHT * DEFAULT_SCENE.resolutionScale);
   });
 
-  test('the bloom chain is a quarter of the canvas', async () => {
+  test('the bloom chain starts at half the canvas', async () => {
     const { gpu } = await setup();
     tick(gpu, 1);
     const [frame] = gpu.frames;
-    assert.equal(read(frame, 'bloomWidth'), CSS_WIDTH * 0.25);
-    assert.equal(read(frame, 'bloomHeight'), CSS_HEIGHT * 0.25);
+    assert.equal(read(frame, 'bloomWidth'), CSS_WIDTH * 0.5);
+    assert.equal(read(frame, 'bloomHeight'), CSS_HEIGHT * 0.5);
+  });
+
+  test('the shading mode and peak temperature reach the shader', async () => {
+    const { renderer, gpu } = await setup();
+    renderer.setScene({ shading: 'physical', peakTemperature: 9000 });
+    tick(gpu, 1);
+    const frame = gpu.frames.at(-1)!;
+    assert.equal(read(frame, 'shading'), 1);
+    assert.equal(read(frame, 'peakTemperature'), 9000);
   });
 
   test('the dispatch covers its band at one workgroup per 8x8 pixels', async () => {
@@ -293,9 +313,9 @@ describe('presentation', () => {
       const writing = 1 - reading;
       const presented = labelIndex(presentPass(frame).bindGroup);
 
-      if (read(frame, 'frameIndex') === 0) {
-        // Nothing complete exists yet, so the in-progress texture is shown and
-        // bands appear as they land rather than holding the pre-reset image.
+      if (gpu.frames.indexOf(frame) < passes(gpu.frames)[0].frames.length) {
+        // Before anything has ever completed there is nothing else to show, so
+        // the very first pass shows its own bands as they land.
         assert.equal(presented, writing, 'the first pass should show its own bands');
       } else {
         assert.equal(presented, reading, 'presented a half-written texture');
@@ -321,7 +341,7 @@ describe('presentation', () => {
     tick(gpu, 12);
 
     for (const frame of gpu.frames) {
-      const bright = frame.passes.find((pass) => pass.label === 'kerr-bloom-bright');
+      const bright = frame.passes.find((pass) => pass.label === 'kerr-bloom-down-0');
       assert.ok(bright);
       assert.equal(
         labelIndex(bright.bindGroup),
@@ -466,8 +486,9 @@ describe('interaction', () => {
     tick(gpu, 1);
     assert.ok(read(gpu.frames.at(-1)!, 'traceWidth') < full);
 
-    gpu.advance(1000);
-    tick(gpu, 1);
+    // The drawn camera eases after the target, and the trace stays coarse
+    // until it has settled and then held still for the idle window.
+    tick(gpu, 60, 16);
     assert.equal(read(gpu.frames.at(-1)!, 'traceWidth'), full);
   });
 
@@ -483,6 +504,156 @@ describe('interaction', () => {
     const frame = gpu.frames.at(-1)!;
     assert.equal(read(frame, 'canvasWidth'), CSS_WIDTH);
     assert.equal(read(frame, 'canvasHeight'), CSS_HEIGHT);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('smooth interaction', () => {
+  /** Settles into full-resolution progressive mode, several passes deep. */
+  const settle = (gpu: FakeGpu) => tick(gpu, 40);
+
+  test('a change keeps the last complete image on screen until its pass lands', async () => {
+    const { renderer, gpu } = await setup();
+    settle(gpu);
+    const width = read(gpu.frames.at(-1)!, 'traceWidth');
+
+    renderer.setScene({ diskThickness: 0.03 });
+    tick(gpu, 1);
+    const frame = gpu.frames.at(-1)!;
+
+    // The new (coarse) pass has started. What is on screen is the texture it
+    // reads — the old whole image, at its own size — never the one it writes.
+    assert.equal(read(frame, 'frameIndex'), 0);
+    assert.ok(read(frame, 'traceWidth') < width, 'the change did not go coarse');
+    assert.equal(
+      labelIndex(presentPass(frame).bindGroup),
+      labelIndex(frame.compute!.bindGroup),
+      'showed the texture being written',
+    );
+    assert.equal(read(frame, 'presentWidth'), width);
+  });
+
+  test('a moving camera redraws the whole image every frame', async () => {
+    const { renderer, gpu } = await setup();
+    settle(gpu);
+
+    const start = gpu.frames.length;
+    for (let i = 0; i < 10; i++) {
+      renderer.updateCamera((camera) => {
+        camera.azimuth += 0.01;
+      });
+      tick(gpu, 1, 16);
+    }
+
+    const moving = gpu.frames.slice(start);
+    for (const frame of moving) {
+      assert.equal(read(frame, 'bandOffset'), 0, 'a moving frame was split into bands');
+      assert.equal(read(frame, 'bandHeight'), read(frame, 'traceHeight'));
+    }
+    // Each frame completed, so the next one presents it.
+    for (let i = 1; i < moving.length; i++) {
+      assert.equal(read(moving[i], 'presentWidth'), read(moving[i - 1], 'traceWidth'));
+    }
+  });
+
+  test('starting and ending a drag never reallocates the accumulation', async () => {
+    const { renderer, gpu } = await setup();
+    settle(gpu);
+
+    let created = 0;
+    const createTexture = gpu.device.createTexture.bind(gpu.device);
+    gpu.device.createTexture = (descriptor: GPUTextureDescriptor) => {
+      created++;
+      return createTexture(descriptor);
+    };
+
+    renderer.updateCamera((camera) => {
+      camera.azimuth += 0.3;
+    });
+    tick(gpu, 80, 16);
+    assert.equal(created, 0, 'a drag reallocated textures, which flashes black');
+  });
+
+  test('the coarse image stays up until the first full pass completes', async () => {
+    const { renderer, gpu } = await setup();
+    tick(gpu, 1);
+    const full = read(gpu.frames.at(-1)!, 'traceWidth');
+
+    renderer.updateCamera((camera) => {
+      camera.azimuth += 0.2;
+    });
+    // Slow frames: full resolution needs many bands per pass.
+    tick(gpu, 40, 40);
+
+    const handoff = gpu.frames.findIndex(
+      (frame, i) =>
+        i > 0 &&
+        read(frame, 'traceWidth') === full &&
+        read(gpu.frames[i - 1], 'traceWidth') < full,
+    );
+    assert.ok(handoff > 0, 'never returned to full resolution');
+    const coarse = read(gpu.frames[handoff - 1], 'traceWidth');
+
+    for (const frame of gpu.frames.slice(handoff)) {
+      if (read(frame, 'frameIndex') > 0) break;
+      assert.equal(read(frame, 'presentWidth'), coarse, 'showed a partial full-res pass');
+    }
+  });
+
+  test('the interactive resolution adapts to frame time', async () => {
+    const widthWhileMoving = async (msPerFrame: number) => {
+      const { renderer, gpu } = await setup();
+      for (let i = 0; i < 60; i++) {
+        renderer.updateCamera((camera) => {
+          camera.azimuth += 0.01;
+        });
+        tick(gpu, 1, msPerFrame);
+      }
+      return read(gpu.frames.at(-1)!, 'traceWidth');
+    };
+
+    assert.ok(
+      (await widthWhileMoving(40)) < (await widthWhileMoving(5)),
+      'slow frames did not lower the interactive resolution',
+    );
+  });
+
+  test('the drawn camera eases toward the target', async () => {
+    const { renderer, gpu } = await setup();
+    tick(gpu, 1, 16);
+    const startX = read(gpu.frames.at(-1)!, 'eyeX');
+
+    renderer.updateCamera((camera) => {
+      camera.azimuth += 1;
+    });
+    const target = renderer.camera.azimuth;
+    tick(gpu, 2, 16);
+    const midX = read(gpu.frames.at(-1)!, 'eyeX');
+
+    tick(gpu, 120, 16);
+    const endX = read(gpu.frames.at(-1)!, 'eyeX');
+    const expectedEnd =
+      DEFAULT_CAMERA.radius * Math.cos(DEFAULT_CAMERA.elevation) * Math.cos(target);
+
+    assert.notEqual(midX, startX, 'the camera did not start moving');
+    assert.ok(Math.abs(midX - endX) > 1e-2, 'the camera jumped instead of easing');
+    assert.ok(Math.abs(endX - expectedEnd) < 1e-3, 'the camera never arrived');
+  });
+
+  test('a fling coasts and then stops', async () => {
+    const { renderer, gpu } = await setup();
+    tick(gpu, 1, 16);
+    const before = renderer.camera.azimuth;
+
+    renderer.setCameraVelocity(0.002, 0);
+    tick(gpu, 10, 16);
+    assert.ok(renderer.camera.azimuth > before, 'the camera did not coast');
+
+    tick(gpu, 400, 16);
+    const stopped = renderer.camera.azimuth;
+    tick(gpu, 10, 16);
+    assert.equal(renderer.camera.azimuth, stopped, 'the coast never decayed');
   });
 });
 

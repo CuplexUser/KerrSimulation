@@ -9,19 +9,49 @@
 
 export class FakePointerEvent extends Event {
   pointerId: number;
+  pointerType: string;
   button: number;
   clientX: number;
   clientY: number;
+  shiftKey: boolean;
 
   constructor(
     type: string,
-    init: { pointerId?: number; button?: number; clientX?: number; clientY?: number } = {},
+    init: {
+      pointerId?: number;
+      pointerType?: string;
+      button?: number;
+      clientX?: number;
+      clientY?: number;
+      shiftKey?: boolean;
+      /** Overrides the event's own clock, for velocity and fling tests. */
+      timeStamp?: number;
+    } = {},
   ) {
     super(type, { cancelable: true });
     this.pointerId = init.pointerId ?? 1;
+    this.pointerType = init.pointerType ?? 'mouse';
     this.button = init.button ?? 0;
     this.clientX = init.clientX ?? 0;
     this.clientY = init.clientY ?? 0;
+    this.shiftKey = init.shiftKey ?? false;
+    if (init.timeStamp !== undefined) {
+      Object.defineProperty(this, 'timeStamp', { value: init.timeStamp });
+    }
+  }
+}
+
+export class FakeKeyEvent extends Event {
+  key: string;
+  shiftKey: boolean;
+  ctrlKey = false;
+  metaKey = false;
+  altKey = false;
+
+  constructor(key: string, init: { shiftKey?: boolean } = {}) {
+    super('keydown', { cancelable: true });
+    this.key = key;
+    this.shiftKey = init.shiftKey ?? false;
   }
 }
 

@@ -29,6 +29,7 @@ const BASIS: CameraBasis = {
   right: [31, 32, 33],
   up: [41, 42, 43],
   tanHalfFov: 0.5,
+  shift: [0.25, -0.125],
 };
 
 const PARAMS: RenderParams = {
@@ -43,6 +44,10 @@ const PARAMS: RenderParams = {
   bloomStrength: 0.6,
   dopplerBeaming: 0.15,
   diskThickness: 0.02,
+  shading: 'physical',
+  peakTemperature: 7500,
+  fluxPeak: 0.004,
+  luminanceNorm: 0.03125,
 };
 
 const INPUT: UniformInput = {
@@ -57,6 +62,9 @@ const INPUT: UniformInput = {
   bandHeight: 32,
   bloomWidth: 400,
   bloomHeight: 225,
+  presentWidth: 600,
+  presentHeight: 300,
+  ditherSeed: 9,
 };
 
 const pack = (over: Partial<UniformInput> = {}): Float32Array => {
@@ -74,8 +82,8 @@ const vec4 = (data: Float32Array, slot: number): number[] =>
 describe('packUniforms slot layout', () => {
   const data = pack();
 
-  test('slot 0 — camera position', () => {
-    assert.deepEqual(vec4(data, 0), [11, 12, 13, 0]);
+  test('slot 0 — camera position and horizontal lens shift', () => {
+    assert.deepEqual(vec4(data, 0), [11, 12, 13, 0.25]);
   });
 
   test('slot 1 — right basis vector and tan(fov/2)', () => {
@@ -86,8 +94,8 @@ describe('packUniforms slot layout', () => {
     assert.deepEqual(vec4(data, 2), [41, 42, 43, 2]);
   });
 
-  test('slot 3 — forward basis vector', () => {
-    assert.deepEqual(vec4(data, 3), [21, 22, 23, 0]);
+  test('slot 3 — forward basis vector and vertical lens shift', () => {
+    assert.deepEqual(vec4(data, 3), [21, 22, 23, -0.125]);
   });
 
   test('slot 4 — spin, disk edge, ISCO, horizon', () => {
@@ -108,6 +116,15 @@ describe('packUniforms slot layout', () => {
 
   test('slot 8 — bloom size and tuning', () => {
     assert.deepEqual(vec4(data, 8), [400, 225, Math.fround(0.95), Math.fround(0.6)]);
+  });
+
+  test('slot 9 — shading mode, peak temperature, inverse flux peak, luminance norm', () => {
+    assert.deepEqual(vec4(data, 9), [1, 7500, 250, 0.03125]);
+  });
+
+  test('slot 10 — presented region, dither seed, pixel angle', () => {
+    // Pixel angle is the image-plane height over the traced rows: 2 tan(fov/2) / h.
+    assert.deepEqual(vec4(data, 10), [600, 300, 9, Math.fround((2 * 0.5) / 400)]);
   });
 
   test('the right vector is not confused with the forward vector', () => {
@@ -133,6 +150,16 @@ describe('packUniforms derived values', () => {
     // in a uniform poisons every ray in the dispatch.
     const data = pack({ height: 0 });
     assert.equal(data[11], 1);
+    assert.ok(data.every(Number.isFinite));
+  });
+
+  test('shading is encoded as a float flag', () => {
+    assert.equal(pack({ params: { ...PARAMS, shading: 'physical' } })[36], 1);
+    assert.equal(pack({ params: { ...PARAMS, shading: 'cinematic' } })[36], 0);
+  });
+
+  test('a missing flux peak does not produce a non-finite reciprocal', () => {
+    const data = pack({ params: { ...PARAMS, fluxPeak: 0 } });
     assert.ok(data.every(Number.isFinite));
   });
 
