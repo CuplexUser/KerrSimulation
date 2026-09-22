@@ -4,7 +4,7 @@ An interactive, physically-based Kerr black hole. Null geodesics are integrated
 through the real Kerr metric in a WebGPU compute shader, and the image refines
 progressively while the camera holds still.
 
-![The render: an accretion disk lensed over and under the shadow](docs/render.png)
+![The render: an accretion disk lensed over and under the shadow](docs/render.webp)
 
 ## Running it
 
